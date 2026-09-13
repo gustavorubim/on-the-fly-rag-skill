@@ -176,6 +176,24 @@ citations. If either hop is thin, retry with a broader query or drop the glob.
 5. Answer using retrieved chunks; quote paths. Do not invent file contents.
 6. Never commit secrets; indexes under `.rag_index/` are gitignored.
 
+## Example user prompts
+
+Users invoke this skill in Copilot with `/on-the-fly-rag` then a natural-language ask. Typical prompts:
+
+```text
+/on-the-fly-rag ingest this folder ./docs into .rag_index
+```
+
+```text
+/on-the-fly-rag compare product_spec vs ops_status on p99 latency; path-filter each hop and cite both sides
+```
+
+```text
+/on-the-fly-rag Pro pricing vs Spec rate limits: plan hops, keep a scratchpad, re-retrieve if coverage is thin, then answer with citations
+```
+
+More copy-paste examples (grep vs embed, Office/PDF corpus, simple Q&A) live in the repo README **Prompt cookbook**.
+
 ## Swapping a larger model
 
 Replace `models/.../model.onnx` (and tokenizer) or pass `--model` / `--tokenizer`.

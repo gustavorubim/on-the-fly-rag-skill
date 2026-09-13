@@ -62,6 +62,70 @@ pip install -r requirements.txt
 
 Unparseable Office/PDF files are **logged and skipped** (ingest continues).
 
+## Prompt cookbook
+
+After the skill is installed, invoke it in Copilot CLI with `/on-the-fly-rag` (skill name from `SKILL.md`), then ask in natural language. Copilot may also auto-select the skill when your ask matches its description.
+
+Copy-paste examples (what you type):
+
+### 1. Ingest a folder
+
+```text
+/on-the-fly-rag ingest this folder ./docs into .rag_index
+```
+
+```text
+/on-the-fly-rag index ./fixtures/sample_docs — use the default parallel workers and store under .rag_index
+```
+
+### 2. Semantic search / Q&A
+
+```text
+/on-the-fly-rag using .rag_index, what discusses authentication? cite file paths
+```
+
+```text
+/on-the-fly-rag search the index for how ingest picks CPU workers; quote the top chunks
+```
+
+### 3. Grep vs embed (lightweight first)
+
+```text
+/on-the-fly-rag I need the exact string ProcessPoolExecutor — use ripgrep, not embeddings
+```
+
+```text
+/on-the-fly-rag should I grep or embed for "where do we talk about latency SLAs across the docs?" — pick one and do it
+```
+
+### 4. Compare 2–3 docs (path filters)
+
+```text
+/on-the-fly-rag compare product_spec vs ops_status on p99 latency; path-filter each hop and cite both sides
+```
+
+```text
+/on-the-fly-rag multi-search: Spec auth policy vs Ops auth in production — filter by *.pdf and *.pptx
+```
+
+### 5. Multi-hop + scratchpad / verify
+
+```text
+/on-the-fly-rag Pro pricing vs Spec rate limits: plan hops, keep a scratchpad, re-retrieve if coverage is thin, then answer with citations
+```
+
+```text
+/on-the-fly-rag FAQ → Spec → Ops on NovaSync latency: dependent facts across docs; verify before answering
+```
+
+### 6. Office / PDF mixed corpus
+
+```text
+/on-the-fly-rag ingest ./fixtures/eval_corpus (pdf/docx/pptx/md) into .rag_index, then summarize auth drift between Spec and Ops
+```
+
+For the NovaSync multi-doc eval (Spec 50ms vs Ops 120ms, OAuth2 vs API keys, Pro pricing), see [docs/eval.md](docs/eval.md). CLI equivalents live in [CLI usage](#cli-usage) below.
+
 ## CLI usage
 
 ```bash
