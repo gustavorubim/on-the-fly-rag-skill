@@ -4,7 +4,8 @@ description: >-
   On-the-fly RAG over a local folder of docs or a codebase. Use when the user
   asks to search, retrieve, or answer questions from a document corpus without
   a hosted vector DB. Chooses between lightweight grep/ripgrep and local
-  embedding RAG with a bundled MiniLM ONNX model.
+  embedding RAG with a bundled MiniLM ONNX model. Supports PDF/DOCX/PPTX
+  ingest and multi-hop retrieval with a scratchpad.
 license: MIT
 ---
 
@@ -21,6 +22,7 @@ repository's scripts. Prefer working software over abstractions.
 | Need call sites, imports, or structural navigation | Semantic similarity across many docs |
 | Corpus is huge and a quick pass is enough | User asked to "index" / "RAG" / "retrieve chunks" |
 | One-off lookup | Repeated questions over the same folder |
+| Multi-doc compare / contradiction / synthesis | Use **multi-hop embed** below |
 
 Optional cheap structure pass: list files, skim READMEs, build a rough
 import/link graph with rg — then decide.
@@ -35,6 +37,10 @@ python3 -m venv .venv
 source .venv/bin/activate   # Windows: .venv\\Scripts\\activate
 pip install -r requirements.txt
 ```
+
+Deps include **pypdf**, **python-docx**, **python-pptx** so `.pdf` / `.docx` /
+`.pptx` are extracted to plain text during ingest (same chunk → embed → store
+path as markdown/code).
 
 Default model is **vendored** at `models/all-MiniLM-L6-v2/model.onnx` (~87MB).
 No Hugging Face download is required at runtime.
@@ -57,24 +63,118 @@ python -m on_the_fly_rag ingest /path/to/docs --index .rag_index -j 4
 python scripts/ingest.py /path/to/docs -o .rag_index -j 4
 ```
 
+Supported sources: text/code extensions **plus** `.pdf`, `.docx`, `.pptx`
+(slide body + speaker notes). Unparseable binaries are **logged and skipped**;
+ingest does not abort.
+
 Chunking stays under MiniLM's **256-token** window (~200 tokens + overlap).
 
-## Search
+## Search (single query)
 
 ```bash
 python -m on_the_fly_rag search "how is auth handled?" --index .rag_index -k 5
+python -m on_the_fly_rag search "latency SLA" -i .rag_index --path-contains product_spec
+python -m on_the_fly_rag search "observed latency" -i .rag_index --glob '*.pptx'
 python scripts/search.py "how is auth handled?" -i .rag_index --json
 ```
 
-Search is single-threaded. Cite returned `path` + snippet when answering.
+Path filters (restrict retrieval to named files / subfolders):
 
-## Workflow for agents
+| Flag | Meaning |
+| --- | --- |
+| `--path-contains SUB` | path substring (case-insensitive) |
+| `--path` / `--glob PAT` | fnmatch on path or basename; `\|` ORs patterns |
+| `--path-prefix PRE` | relative path prefix |
+
+## Multi-search (batch hops)
+
+```bash
+python -m on_the_fly_rag multi-search queries.json -i .rag_index --json -k 5
+# or pipe JSON list on stdin
+echo '[{"id":"a","query":"...","path_glob":"*.pdf"}]' \
+  | python -m on_the_fly_rag multi-search -i .rag_index --json
+```
+
+Each list item: string **or** object with `query`, optional `id`, `top_k`,
+`path_contains`, `path_glob`, `path_prefix`. Response includes `coverage`
+(`thin_hops`, `unique_paths`, `ok`).
+
+## Multi-hop agent loop (required for compare / synthesize / contradict)
+
+Do **not** answer complex cross-doc questions with a single search. Loop:
+
+1. **Clarify** corpus root + whether an index exists; ingest if needed.
+2. **Plan hops** — write 2–N retrieval queries. **When comparing Doc A vs Doc B
+   (or any named files), always attach path filters** (`--glob` / `--path-contains`
+   / `--path-prefix`) per hop. Unfiltered search often conflates docs that
+   cross-reference each other (e.g. Ops notes quoting Spec numbers).
+3. **Retrieve** via `search` and/or `multi-search`.
+4. **Scratchpad** — append structured notes after each hop (template below).
+5. **Verify coverage** — if a hop is thin (`coverage.thin_hops` / low scores /
+   missing an expected doc), replan and re-retrieve (new query or looser filter).
+6. **Answer** only from scratchpad + cited paths. Call out contradictions
+   explicitly. Never invent file contents.
+
+### Scratchpad template
+
+```markdown
+## Scratchpad
+### Goal
+<user question in one line>
+
+### Plan
+- hop1: <query> [filter: ...]
+- hop2: <query> [filter: ...]
+
+### Notes
+| hop | path(s) | score | fact | gap? |
+| --- | --- | --- | --- | --- |
+| 1 | ... | 0.72 | Spec p99=50ms | |
+| 2 | ... | 0.68 | Ops p99=120ms | contradicts hop1 |
+
+### Gaps / contradictions
+- ...
+
+### Verify
+- [ ] each sub-question has ≥1 solid hit
+- [ ] named docs actually retrieved (or explained missing)
+- [ ] ready to answer / need another hop: <yes/no + query>
+```
+
+
+### Path filters are mandatory for compares
+
+Eval showed that a global query mentioning Spec numbers can rank **Ops** first
+when Ops speaker notes quote the Spec (50ms). Always scope hops with
+`--glob '*product_spec*'` / `--glob '*ops_status*'` (etc.). PPTX hits may
+appear as `file.pptx#slide-N` (one chunk per slide); globs like `*.pptx` still
+match. Treat hops with no hits or MiniLM top score &lt; ~0.20 as **thin** and
+re-retrieve.
+
+### Example: compare two docs
+
+```bash
+# After ingesting the corpus:
+cat > /tmp/q.json <<'JSON'
+[
+  {"id":"spec","query":"p99 latency SLA","path_glob":"*product_spec*"},
+  {"id":"ops","query":"observed p99 latency","path_glob":"*ops_status*"}
+]
+JSON
+python -m on_the_fly_rag multi-search /tmp/q.json -i .rag_index --json -k 3
+```
+
+Then fill the scratchpad, note Spec 50ms vs Ops 120ms, and answer with both
+citations. If either hop is thin, retry with a broader query or drop the glob.
+
+## Workflow for agents (simple questions)
 
 1. Clarify the corpus root (folder / repo path).
 2. Choose grep vs embed using the table above.
 3. If embedding: ingest (if no fresh `.rag_index`), then search top-k.
-4. Answer using retrieved chunks; quote paths. Do not invent file contents.
-5. Never commit secrets; indexes under `.rag_index/` are gitignored.
+4. For multi-doc / compare / contradiction → use the **multi-hop loop**.
+5. Answer using retrieved chunks; quote paths. Do not invent file contents.
+6. Never commit secrets; indexes under `.rag_index/` are gitignored.
 
 ## Swapping a larger model
 
@@ -86,4 +186,3 @@ python -m on_the_fly_rag shard path/to/big.onnx --shard-size 90000000
 ```
 
 Document unshard-on-first-use for consumers.
-

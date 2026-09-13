@@ -2,3 +2,7 @@
 onnxruntime==1.30.0
 tokenizers==0.23.2
 numpy==2.5.3
+# Office/PDF extractors (ingest .pdf / .docx / .pptx → plain text)
+pypdf==6.18.1
+python-docx==1.2.0
+python-pptx==1.0.2

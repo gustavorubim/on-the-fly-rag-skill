@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import fnmatch
 import json
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -18,6 +19,36 @@ class StoredChunk:
     start_char: int
     end_char: int
     token_count: int
+
+
+def _path_matches(
+    path: str,
+    *,
+    path_contains: Optional[str] = None,
+    path_glob: Optional[str] = None,
+    path_prefix: Optional[str] = None,
+) -> bool:
+    # Paths may include a section fragment (e.g. report.pptx#slide-2).
+    norm = path.replace("\\", "/")
+    base = norm.split("#", 1)[0]
+    base_name = Path(base).name
+    if path_contains and path_contains.lower() not in norm.lower():
+        return False
+    if path_prefix:
+        pref = path_prefix.replace("\\", "/")
+        if not (norm.startswith(pref) or base.startswith(pref)):
+            return False
+    if path_glob:
+        patterns = [p.strip() for p in path_glob.split("|") if p.strip()]
+        if patterns and not any(
+            fnmatch.fnmatch(norm, pat)
+            or fnmatch.fnmatch(base, pat)
+            or fnmatch.fnmatch(base_name, pat)
+            or fnmatch.fnmatch(Path(norm).name, pat)
+            for pat in patterns
+        ):
+            return False
+    return True
 
 
 class VectorStore:
@@ -70,6 +101,8 @@ class VectorStore:
         *,
         top_k: int = 5,
         path_contains: Optional[str] = None,
+        path_glob: Optional[str] = None,
+        path_prefix: Optional[str] = None,
     ) -> List[Tuple[float, StoredChunk]]:
         if self.vectors is None or not self.chunks:
             self.load()
@@ -78,9 +111,17 @@ class VectorStore:
         q = q / max(float(np.linalg.norm(q)), 1e-12)
         scores = self.vectors @ q
         indices = list(range(len(self.chunks)))
-        if path_contains:
-            needle = path_contains.lower()
-            indices = [i for i in indices if needle in self.chunks[i].path.lower()]
+        if path_contains or path_glob or path_prefix:
+            indices = [
+                i
+                for i in indices
+                if _path_matches(
+                    self.chunks[i].path,
+                    path_contains=path_contains,
+                    path_glob=path_glob,
+                    path_prefix=path_prefix,
+                )
+            ]
             if not indices:
                 return []
             scores_view = scores[indices]

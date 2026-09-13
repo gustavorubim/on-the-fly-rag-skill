@@ -1,0 +1,99 @@
+%PDF-1.3
+%‚„œ”
+1 0 obj
+<<
+/Producer (pypdf)
+>>
+endobj
+2 0 obj
+<<
+/Type /Pages
+/Count 1
+/Kids [ 4 0 R ]
+>>
+endobj
+3 0 obj
+<<
+/Type /Catalog
+/Pages 2 0 R
+>>
+endobj
+4 0 obj
+<<
+/Type /Page
+/Resources <<
+/Font <<
+/F1 5 0 R
+>>
+>>
+/MediaBox [ 0.0 0.0 612 792 ]
+/Parent 2 0 R
+/Contents 6 0 R
+>>
+endobj
+5 0 obj
+<<
+/Type /Font
+/Subtype /Type1
+/BaseFont /Helvetica
+>>
+endobj
+6 0 obj
+<<
+/Length 1069
+>>
+stream
+BT /F1 12 Tf
+50 750 Td (NovaSync API Product Spec v2.1) Tj
+0 -18 Td
+50 732 Td () Tj
+0 -18 Td
+50 714 Td (Overview: NovaSync is a real-time sync API for mobile clients.) Tj
+0 -18 Td
+50 696 Td (Product codename: NovaSync. Owner team: Platform.) Tj
+0 -18 Td
+50 678 Td () Tj
+0 -18 Td
+50 660 Td (Latency SLA: p99 end-to-end latency must stay under 50 milliseconds.) Tj
+0 -18 Td
+50 642 Td (Availability target: 99.95 percent monthly.) Tj
+0 -18 Td
+50 624 Td () Tj
+0 -18 Td
+50 606 Td (Authentication: OAuth2 only. API keys are explicitly unsupported.) Tj
+0 -18 Td
+50 588 Td (All clients must obtain a short-lived bearer token via the auth service.) Tj
+0 -18 Td
+50 570 Td () Tj
+0 -18 Td
+50 552 Td (Rate limits: default ceiling is 1000 requests per minute per tenant.) Tj
+0 -18 Td
+50 534 Td (Burst allowance: 100 requests in any rolling 5-second window.) Tj
+0 -18 Td
+50 516 Td () Tj
+0 -18 Td
+50 498 Td (See the Pricing Guide \(nova_pricing.docx\) for tier costs and entitlements.) Tj
+0 -18 Td
+50 480 Td (See the Ops Status deck for current production observations.) Tj
+0 -18 Td
+ET
+endstream
+endobj
+xref
+0 7
+0000000000 65535 f 
+0000000015 00000 n 
+0000000054 00000 n 
+0000000113 00000 n 
+0000000162 00000 n 
+0000000294 00000 n 
+0000000364 00000 n 
+trailer
+<<
+/Size 7
+/Root 3 0 R
+/Info 1 0 R
+>>
+startxref
+1485
+%%EOF

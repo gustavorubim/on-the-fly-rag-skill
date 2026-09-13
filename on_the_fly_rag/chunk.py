@@ -2,16 +2,54 @@
 
 from __future__ import annotations
 
+import logging
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterator, List, Optional, Sequence
 
 from tokenizers import Tokenizer
 
+from .extract import BINARY_EXTENSIONS, try_load_document
+
+logger = logging.getLogger(__name__)
+
 # Leave room for [CLS]/[SEP] and stay under MiniLM's 256 ctx.
 DEFAULT_MAX_TOKENS = 200
 DEFAULT_OVERLAP_TOKENS = 40
 SPECIAL_TOKEN_OVERHEAD = 2  # CLS + SEP
+
+# Text/code extensions read as UTF-8; binary formats go through extractors.
+TEXT_EXTENSIONS = (
+    ".md",
+    ".txt",
+    ".rst",
+    ".py",
+    ".js",
+    ".ts",
+    ".tsx",
+    ".jsx",
+    ".json",
+    ".yaml",
+    ".yml",
+    ".toml",
+    ".go",
+    ".rs",
+    ".java",
+    ".c",
+    ".h",
+    ".cpp",
+    ".hpp",
+    ".cs",
+    ".rb",
+    ".php",
+    ".sh",
+    ".sql",
+    ".html",
+    ".css",
+)
+
+DEFAULT_EXTENSIONS = TEXT_EXTENSIONS + tuple(sorted(BINARY_EXTENSIONS))
 
 
 @dataclass
@@ -103,40 +141,38 @@ def chunk_text(
     return chunks
 
 
+
+_SLIDE_SPLIT = re.compile(r"(?=\[Slide \d+\])")
+
+
+def _sections_for_chunking(text: str) -> list[tuple[str, str]]:
+    """Split extractor output into labeled sections when slide markers exist.
+
+    Returns list of (path_suffix, section_text). path_suffix is "" for a single
+    body, or "#slide-N" for PPTX-style sections so multi-hop filters/debug can
+    see which slide a hit came from while ``path`` basename filters still work.
+    """
+    text = text.strip()
+    if not text:
+        return []
+    if "[Slide " not in text:
+        return [("", text)]
+    parts = [p.strip() for p in _SLIDE_SPLIT.split(text) if p.strip()]
+    out: list[tuple[str, str]] = []
+    for part in parts:
+        m = re.match(r"\[Slide (\d+)\]", part)
+        suffix = f"#slide-{m.group(1)}" if m else ""
+        out.append((suffix, part))
+    return out if out else [("", text)]
+
+
 def iter_files(
     root: Path,
     *,
     extensions: Optional[Sequence[str]] = None,
 ) -> Iterator[Path]:
     if extensions is None:
-        extensions = (
-            ".md",
-            ".txt",
-            ".rst",
-            ".py",
-            ".js",
-            ".ts",
-            ".tsx",
-            ".jsx",
-            ".json",
-            ".yaml",
-            ".yml",
-            ".toml",
-            ".go",
-            ".rs",
-            ".java",
-            ".c",
-            ".h",
-            ".cpp",
-            ".hpp",
-            ".cs",
-            ".rb",
-            ".php",
-            ".sh",
-            ".sql",
-            ".html",
-            ".css",
-        )
+        extensions = DEFAULT_EXTENSIONS
     ext_set = {e.lower() if e.startswith(".") else f".{e.lower()}" for e in extensions}
     root = root.resolve()
     if root.is_file():
@@ -171,15 +207,25 @@ def chunk_path(
     max_tokens: int = DEFAULT_MAX_TOKENS,
     overlap_tokens: int = DEFAULT_OVERLAP_TOKENS,
 ) -> List[Chunk]:
-    try:
-        text = path.read_text(encoding="utf-8", errors="replace")
-    except OSError:
+    """Load via ``load_document`` (extractors for PDF/DOCX/PPTX), then chunk.
+
+    Unreadable/unparseable files are logged and skipped (empty list) so parallel
+    ingest does not abort the whole run. PPTX slide markers become separate
+    sections (``path#slide-N``) so multi-hop retrieval can target topics.
+    """
+    text = try_load_document(path)
+    if text is None:
         return []
     rel = str(path.resolve().relative_to(root.resolve()))
-    return chunk_text(
-        text,
-        path=rel,
-        tokenizer=tokenizer,
-        max_tokens=max_tokens,
-        overlap_tokens=overlap_tokens,
-    )
+    chunks: List[Chunk] = []
+    for suffix, section in _sections_for_chunking(text):
+        section_path = f"{rel}{suffix}"
+        part_chunks = chunk_text(
+            section,
+            path=section_path,
+            tokenizer=tokenizer,
+            max_tokens=max_tokens,
+            overlap_tokens=overlap_tokens,
+        )
+        chunks.extend(part_chunks)
+    return chunks

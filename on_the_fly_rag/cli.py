@@ -1,4 +1,4 @@
-"""argparse CLI for ingest / search / shard / unshard."""
+"""argparse CLI for ingest / search / multi-search / shard / unshard."""
 
 from __future__ import annotations
 
@@ -9,8 +9,8 @@ import sys
 from pathlib import Path
 
 from .ingest import _default_workers, ingest
-from .paths import DEFAULT_MODEL_ONNX, DEFAULT_TOKENIZER, REPO_ROOT
-from .search import format_results, search
+from .paths import DEFAULT_MODEL_ONNX, DEFAULT_TOKENIZER
+from .search import format_multi, format_results, multi_search, search
 from .shard import shard_file, unshard_file
 
 
@@ -26,6 +26,30 @@ def _add_model_args(p: argparse.ArgumentParser) -> None:
         type=Path,
         default=DEFAULT_TOKENIZER,
         help="Path to tokenizer.json",
+    )
+
+
+def _add_path_filter_args(p: argparse.ArgumentParser) -> None:
+    p.add_argument(
+        "--path-contains",
+        type=str,
+        default=None,
+        help="Only chunks whose path contains this substring (case-insensitive)",
+    )
+    p.add_argument(
+        "--path",
+        "--glob",
+        dest="path_glob",
+        type=str,
+        default=None,
+        help="fnmatch glob on chunk path or basename (e.g. '*.pdf' or 'docs/a.md'); "
+        "use | to OR multiple patterns",
+    )
+    p.add_argument(
+        "--path-prefix",
+        type=str,
+        default=None,
+        help="Only chunks whose relative path starts with this prefix",
     )
 
 
@@ -67,9 +91,32 @@ def build_parser() -> argparse.ArgumentParser:
         help="Index directory",
     )
     p_se.add_argument("--top-k", "-k", type=int, default=5)
-    p_se.add_argument("--path-contains", type=str, default=None)
+    _add_path_filter_args(p_se)
     p_se.add_argument("--json", action="store_true", help="Emit JSON")
     _add_model_args(p_se)
+
+    p_ms = sub.add_parser(
+        "multi-search",
+        help="Batch multiple retrieval queries (JSON file or stdin) for multi-hop agents",
+    )
+    p_ms.add_argument(
+        "queries_file",
+        type=Path,
+        nargs="?",
+        default=None,
+        help="JSON file: list of strings or {query,id,path_contains,path_glob,path_prefix,top_k}. "
+        "Omit to read stdin.",
+    )
+    p_ms.add_argument(
+        "--index",
+        "-i",
+        type=Path,
+        default=Path(".rag_index"),
+        help="Index directory",
+    )
+    p_ms.add_argument("--top-k", "-k", type=int, default=5)
+    p_ms.add_argument("--json", action="store_true", help="Emit JSON (default for agents)")
+    _add_model_args(p_ms)
 
     p_sh = sub.add_parser("shard", help="Split a large weight file into <100MB parts")
     p_sh.add_argument("input", type=Path)
@@ -121,8 +168,28 @@ def main(argv: list[str] | None = None) -> int:
             model_path=args.model,
             tokenizer_path=args.tokenizer,
             path_contains=args.path_contains,
+            path_glob=args.path_glob,
+            path_prefix=args.path_prefix,
         )
         print(format_results(results, as_json=args.json))
+        return 0
+
+    if args.command == "multi-search":
+        if args.queries_file is not None:
+            raw = args.queries_file.read_text(encoding="utf-8")
+        else:
+            raw = sys.stdin.read()
+        queries = json.loads(raw)
+        if not isinstance(queries, list):
+            parser.error("multi-search input must be a JSON list")
+        results = multi_search(
+            queries,
+            index_dir=args.index,
+            top_k=args.top_k,
+            model_path=args.model,
+            tokenizer_path=args.tokenizer,
+        )
+        print(format_multi(results, as_json=args.json))
         return 0
 
     if args.command == "shard":
