@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "on-the-fly-rag"
+version = "0.1.0"
+description = "On-the-fly RAG skill: local chunk/embed/search over a folder of docs or a codebase"
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.10"
+dependencies = [
+  "onnxruntime==1.30.0",
+  "tokenizers==0.23.2",
+  "numpy==2.5.3",
+]
+
+[project.scripts]
+on-the-fly-rag = "on_the_fly_rag.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["on_the_fly_rag*"]
