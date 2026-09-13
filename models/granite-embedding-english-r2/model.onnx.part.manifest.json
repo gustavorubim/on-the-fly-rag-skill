@@ -1,0 +1,12 @@
+{
+  "source": "model.onnx",
+  "sha256": "62084692259dad3b31b13436600d825cd1defb1cb68d8b93c0d374df9ad73511",
+  "shard_size": 94371840,
+  "parts": [
+    "model.onnx.part00",
+    "model.onnx.part01",
+    "model.onnx.part02",
+    "model.onnx.part03"
+  ],
+  "total_bytes": 302534935
+}

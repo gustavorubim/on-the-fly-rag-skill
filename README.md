@@ -3,11 +3,11 @@
 Self-contained **GitHub Copilot / coding-agent skill** for **on-the-fly RAG** over a local folder of docs or a codebase.
 
 - **Lightweight search** — ripgrep / regex / path filters / cheap structure
-- **On-the-fly embedding RAG** — chunk + embed with a **bundled** MiniLM ONNX model, persist a local vector store, search top-k chunks
+- **On-the-fly embedding RAG** — chunk + embed with **bundled** ONNX models (MiniLM default + IBM Granite English R2), persist a local vector store, search top-k chunks
 - **Office/PDF ingest** — `.pdf` / `.docx` / `.pptx` → plain text via lightweight extractors, then the same chunk → embed → store path
 - **Multi-hop retrieval** — path/glob filters + `multi-search` + skill instructions (scratchpad / verify loop) for compare & synthesize
 
-No hosted vector DB. No Hugging Face download for the default model after clone. Works offline once Python deps are installed.
+No hosted vector DB. No Hugging Face download after clone (weights are vendored). Works offline once Python deps are installed. **First ingest:** pick MiniLM vs Granite (see [Embedding models](#embedding-models)).
 
 ## What’s included
 
@@ -16,7 +16,8 @@ No hosted vector DB. No Hugging Face download for the default model after clone.
 | `.github/skills/on-the-fly-rag/SKILL.md` | Copilot project skill (also under `skill/on-the-fly-rag/`) |
 | `on_the_fly_rag/` | Python package: extract, chunk, embed, ingest, search, multi-search, active index, shard |
 | `scripts/` | Thin CLI wrappers (`ingest.py`, `search.py`, `multi_search.py`, `shard.py`, `unshard.py`) |
-| `models/all-MiniLM-L6-v2/` | Vendored ONNX weights + tokenizer (**~87MB**, &lt;100MB) |
+| `models/all-MiniLM-L6-v2/` | Default MiniLM ONNX + tokenizer (**~87MB**) |
+| `models/granite-embedding-*-english-r2/` | IBM Granite R2 ONNX (small ready; english **sharded**, unshard first) |
 | `fixtures/sample_docs/` | Tiny text corpus for offline tests |
 | `fixtures/office/` | Minimal PDF/DOCX/PPTX fixtures |
 | `fixtures/eval_corpus/` | Multi-doc NovaSync corpus (pdf+docx+pptx+md) for multi-hop eval |
@@ -62,6 +63,53 @@ pip install -r requirements.txt
 
 Unparseable Office/PDF files are **logged and skipped** (ingest continues).
 
+## Embedding models
+
+| Preset (`--model`) | HF id | Params | Dim | Ctx | On disk | Retrieval ballpark |
+| --- | --- | --- | --- | --- | --- | --- |
+| `minilm` **(default)** | `sentence-transformers/all-MiniLM-L6-v2` | 22M | 384 | 256 | ~87MB ONNX | Fast/tiny offline baseline |
+| `granite-small` | `ibm-granite/granite-embedding-small-english-r2` | 47M | 384 | 8k | ~94MB ONNX | Stronger retrieval, still small |
+| `granite` | `ibm-granite/granite-embedding-english-r2` | 149M | 768 | 8k | ~303MB ONNX (**sharded**) | Best quality of the three |
+
+All three run on **onnxruntime CPU** (no PyTorch required at runtime). Granite weights are Apache-2.0 (IBM); MiniLM is Apache-2.0 (sentence-transformers).
+
+### First-question model choice (agents)
+
+On the **first** embed/index ask, the agent must outline which model will be used and let the user pick (or confirm MiniLM). Example:
+
+```text
+/on-the-fly-rag index this folder
+```
+
+Agent should present MiniLM vs Granite Small R2 vs Granite English R2 (size/quality + unshard need), then unshard if needed, ingest with that model, and record `model_id` in the index `config.json` so search matches.
+
+```bash
+python -m on_the_fly_rag models          # choice outline + readiness
+python -m on_the_fly_rag models --json
+```
+
+### Unshard Granite English R2 (required once)
+
+`granite` ships as shards under GitHub’s 100MB limit:
+
+```bash
+python -m on_the_fly_rag unshard --input models/granite-embedding-english-r2/model.onnx.part
+```
+
+`granite-small` is a single &lt;100MB file — no unshard. MiniLM likewise.
+
+### CLI `--model` presets
+
+```bash
+python -m on_the_fly_rag ingest ./docs --model minilm
+python -m on_the_fly_rag ingest ./docs --model granite-small
+python -m on_the_fly_rag unshard --input models/granite-embedding-english-r2/model.onnx.part
+python -m on_the_fly_rag ingest ./docs --model granite
+python -m on_the_fly_rag status   # active index model + whether shards need unshard
+```
+
+Ingest writes `model_id` / paths into `<index>/config.json`. Search loads that model automatically; it errors clearly if weights are missing or still sharded. Re-ingest after switching models (dimensions differ: 384 vs 768).
+
 ## Prompt cookbook
 
 After the skill is installed, invoke it in Copilot CLI with `/on-the-fly-rag` (skill name from `SKILL.md`), then ask in natural language. Copilot may also auto-select the skill when your ask matches its description.
@@ -72,8 +120,14 @@ Copy-paste examples (what you type):
 
 ### 1. Ingest a folder (sets the default / active index)
 
+On first index, the agent asks which model to use (MiniLM default vs Granite).
+
 ```text
 /on-the-fly-rag index ./docs and make it the default corpus
+```
+
+```text
+/on-the-fly-rag index ./docs with granite-small
 ```
 
 ```text
@@ -210,14 +264,14 @@ See [docs/eval.md](docs/eval.md) for the NovaSync multi-doc eval (Spec 50ms vs O
 docs/ (md/txt/code + pdf/docx/pptx)
        ──► extract (Office/PDF → text) or UTF-8 read
        ──► chunk (token-aware, ~200 tok + overlap)
-       ──► embed (ONNX all-MiniLM-L6-v2, mean-pool + L2)
+       ──► embed (ONNX MiniLM mean-pool or Granite sentence_embedding + L2)
        ──► <source>/.rag_index/{vectors.npy, chunks.jsonl, config.json}
        ──► .on-the-fly-rag.json  (active: {source, index_dir, updated_at})
 query ──► embed ──► cosine top-k (+ optional path/glob) ──► paths + snippets
 multi ──► N queries (batch) ──► coverage stats for verify step
 ```
 
-- **Model:** `sentence-transformers/all-MiniLM-L6-v2` exported ONNX, 384-dim, 256 ctx
+- **Models:** MiniLM (default, 384-d) or IBM Granite English R2 small/full (384/768-d, 8k ctx); see table above
 - **Chunking:** token-aware via `tokenizers`; stays under 256 (default max ~200 + CLS/SEP)
 - **Extractors:** `on_the_fly_rag/extract.py` is the only place binary formats are handled
 - **Store:** numpy float32 matrix + JSONL metadata (no SQLite required)
@@ -225,15 +279,13 @@ multi ──► N queries (batch) ──► coverage stats for verify step
 - **Shard/unshard:** split oversized weights for GitHub’s 100MB file limit
 
 ```bash
-python -m on_the_fly_rag shard models/all-MiniLM-L6-v2/model.onnx
-python -m on_the_fly_rag unshard --input models/all-MiniLM-L6-v2/model.onnx.part
+python -m on_the_fly_rag shard path/to/big.onnx
+python -m on_the_fly_rag unshard --input models/granite-embedding-english-r2/model.onnx.part
 ```
 
-### Swapping a larger model (e.g. bge-small)
+### Custom ONNX path
 
-1. Export or download an ONNX encoder + matching `tokenizer.json`.
-2. If any file is ≥100MB, `shard` it before pushing; document `unshard` on first use.
-3. Pass `--model` / `--tokenizer` to ingest and search (or replace files under `models/`).
+Pass `--model /path/to/model.onnx` (and `--tokenizer` if needed). Prefer presets (`minilm` / `granite-small` / `granite`) for the bundled models.
 
 ## Decision guide: grep vs embed
 
@@ -255,8 +307,9 @@ All tests are offline (vendored model + fixtures).
 
 ## Limits
 
-- MiniLM context is **256 tokens** — do not use huge chunks.
-- Default model is small/general; domain jargon may need a stronger encoder.
+- MiniLM context is **256 tokens**; Granite R2 supports up to **8192** (chunk defaults stay ~200 unless you raise `--max-tokens`).
+- Default model is MiniLM (fast); use `granite-small` / `granite` for stronger retrieval.
+- `granite` must be **unsharded** once after clone before ingest/search.
 - Index is local cosine search (brute-force); fine for small/medium corpora, not millions of chunks.
 - Non-allow-listed binaries are skipped; PDF/DOCX/PPTX go through extractors (`chunk.iter_files` + `extract.load_document`).
 - GitHub blocks files ≥100MB — keep each committed weight file under that limit (default ONNX is ~87MB).
@@ -265,4 +318,10 @@ All tests are offline (vendored model + fixtures).
 
 MIT — see [LICENSE](LICENSE).
 
-Model weights: originally from [sentence-transformers/all-MiniLM-L6-v2](https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2) (Apache-2.0).
+Model weights:
+
+- [sentence-transformers/all-MiniLM-L6-v2](https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2) — Apache-2.0
+- [ibm-granite/granite-embedding-small-english-r2](https://huggingface.co/ibm-granite/granite-embedding-small-english-r2) — Apache-2.0
+- [ibm-granite/granite-embedding-english-r2](https://huggingface.co/ibm-granite/granite-embedding-english-r2) — Apache-2.0
+
+Vendored Granite ONNX (fp16) via [onnx-community](https://huggingface.co/onnx-community) exports of the IBM checkpoints.

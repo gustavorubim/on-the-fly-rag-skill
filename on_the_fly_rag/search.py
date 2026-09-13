@@ -6,8 +6,9 @@ import json
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Union
 
-from .embed import MiniLMEmbedder
+from .embed import OnnxEmbedder
 from .paths import DEFAULT_MODEL_ONNX, DEFAULT_TOKENIZER
+from .registry import load_spec_from_index_config, resolve_model
 from .store import VectorStore
 
 
@@ -28,25 +29,69 @@ def _hits_to_dicts(hits) -> List[Dict[str, Any]]:
     return results
 
 
+def _embedder_for_index(
+    store: VectorStore,
+    *,
+    model: Optional[Union[str, Path]] = None,
+    model_path: Optional[Path | str] = None,
+    tokenizer_path: Optional[Path | str] = None,
+) -> OnnxEmbedder:
+    """Build an embedder matching the index (or an explicit override)."""
+    if model is not None:
+        return OnnxEmbedder.from_resolve(model, tokenizer=tokenizer_path)
+    if model_path is not None:
+        return OnnxEmbedder.from_resolve(
+            model_path, tokenizer=tokenizer_path or DEFAULT_TOKENIZER
+        )
+
+    cfg = store.config or {}
+    spec = load_spec_from_index_config(cfg)
+    if spec is not None:
+        try:
+            return OnnxEmbedder.from_spec(spec)
+        except FileNotFoundError as e:
+            raise FileNotFoundError(
+                f"Index was built with model {spec.id!r} but weights are unavailable.\n{e}"
+            ) from e
+
+    # Legacy indexes: fall back to recorded paths or MiniLM default
+    mp = cfg.get("model") or DEFAULT_MODEL_ONNX
+    tp = cfg.get("tokenizer") or tokenizer_path or DEFAULT_TOKENIZER
+    try:
+        return OnnxEmbedder.from_resolve(mp, tokenizer=tp)
+    except FileNotFoundError as e:
+        raise FileNotFoundError(
+            f"Could not load embedder for index {store.index_dir}: {e}"
+        ) from e
+
+
 def search(
     query: str,
     *,
     index_dir: Path | str,
     top_k: int = 5,
-    model_path: Path | str = DEFAULT_MODEL_ONNX,
-    tokenizer_path: Path | str = DEFAULT_TOKENIZER,
+    model: Optional[Union[str, Path]] = None,
+    model_path: Optional[Path | str] = None,
+    tokenizer_path: Optional[Path | str] = None,
     path_contains: Optional[str] = None,
     path_glob: Optional[str] = None,
     path_prefix: Optional[str] = None,
-    embedder: Optional[MiniLMEmbedder] = None,
+    embedder: Optional[OnnxEmbedder] = None,
     store: Optional[VectorStore] = None,
 ) -> List[Dict[str, Any]]:
     if store is None:
         store = VectorStore(index_dir)
         store.load()
-    emb = embedder or MiniLMEmbedder(
-        model_path=model_path, tokenizer_path=tokenizer_path
+    emb = embedder or _embedder_for_index(
+        store, model=model, model_path=model_path, tokenizer_path=tokenizer_path
     )
+    # Dim check: avoid silent garbage if wrong model used
+    if store.vectors is not None and store.vectors.shape[1] != emb.dim:
+        raise ValueError(
+            f"Model dim {emb.dim} does not match index dim {store.vectors.shape[1]}. "
+            f"Re-ingest with the same model, or pass --model matching index config "
+            f"(model_id={ (store.config or {}).get('model_id', '?') })."
+        )
     qvec = emb.encode_one(query)
     hits = store.search(
         qvec,
@@ -63,8 +108,9 @@ def multi_search(
     *,
     index_dir: Path | str,
     top_k: int = 5,
-    model_path: Path | str = DEFAULT_MODEL_ONNX,
-    tokenizer_path: Path | str = DEFAULT_TOKENIZER,
+    model: Optional[Union[str, Path]] = None,
+    model_path: Optional[Path | str] = None,
+    tokenizer_path: Optional[Path | str] = None,
 ) -> List[Dict[str, Any]]:
     """Run multiple retrievals, reusing one embedder + loaded index.
 
@@ -74,7 +120,9 @@ def multi_search(
     """
     store = VectorStore(index_dir)
     store.load()
-    emb = MiniLMEmbedder(model_path=model_path, tokenizer_path=tokenizer_path)
+    emb = _embedder_for_index(
+        store, model=model, model_path=model_path, tokenizer_path=tokenizer_path
+    )
     out: List[Dict[str, Any]] = []
     for i, item in enumerate(queries):
         if isinstance(item, str):

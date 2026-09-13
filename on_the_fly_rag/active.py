@@ -19,7 +19,9 @@ import json
 import os
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
+
+from .registry import all_models_status, load_spec_from_index_config
 
 
 STATE_FILENAME = ".on-the-fly-rag.json"
@@ -129,28 +131,75 @@ def _looks_like_index(path: Path) -> bool:
     return (path / "vectors.npy").is_file() and (path / "chunks.jsonl").is_file()
 
 
+def _index_model_info(index_dir: Path) -> Dict[str, Any]:
+    """Read model_id / readiness from an index config.json if present."""
+    cfg_path = index_dir / "config.json"
+    info: Dict[str, Any] = {"model_id": None, "model_label": None, "dim": None}
+    if not cfg_path.is_file():
+        return info
+    try:
+        cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return info
+    info["model_id"] = cfg.get("model_id")
+    info["model_label"] = cfg.get("model_label")
+    info["dim"] = cfg.get("dim")
+    info["model_path"] = cfg.get("model")
+    spec = load_spec_from_index_config(cfg)
+    if spec is not None:
+        from .registry import model_file_status
+
+        st = model_file_status(spec)
+        info["model_state"] = st["state"]
+        info["unshard_command"] = st.get("unshard_command")
+    return info
+
+
 def format_status(active: Optional[Dict[str, Any]] = None) -> str:
     if active is None:
         active = load_active()
+    model_lines: List[str] = []
+    for st in all_models_status():
+        flag = st["state"]
+        extra = ""
+        if st.get("unshard_command"):
+            extra = f" → {st['unshard_command']}"
+        model_lines.append(
+            f"  - {st['id']}: {flag} ({st['params_m']}M, {st['dim']}-d){extra}"
+        )
+    bundled = "bundled models:\n" + "\n".join(model_lines)
+
     if not active:
         cwd_fb = Path.cwd() / INDEX_DIRNAME
         if _looks_like_index(cwd_fb):
+            minfo = _index_model_info(cwd_fb)
             return (
                 "No active-index state file.\n"
                 f"Fallback cwd index exists: {cwd_fb.resolve()}\n"
-                "Tip: run `ingest` (sets active) or `use <index_dir>`."
+                f"index model: {minfo.get('model_id') or '?'} "
+                f"(state={minfo.get('model_state', '?')})\n"
+                "Tip: run `ingest` (sets active) or `use <index_dir>`.\n"
+                + bundled
             )
         return (
             "No active index.\n"
-            "Ingest a corpus folder to set one, or `use <index_dir>`."
+            "Ingest a corpus folder to set one, or `use <index_dir>`.\n"
+            + bundled
         )
     idx = Path(active["index_dir"])
     exists = _looks_like_index(idx)
+    minfo = _index_model_info(idx) if exists else {}
     lines = [
         f"source:     {active.get('source', '')}",
         f"index_dir:  {idx}",
         f"updated_at: {active.get('updated_at', '')}",
         f"exists:     {exists}",
         f"state_file: {state_path(for_write=False)}",
+        f"model_id:   {minfo.get('model_id') or '(unknown)'}",
+        f"model:      {minfo.get('model_label') or minfo.get('model_path') or '?'}",
+        f"model_state:{minfo.get('model_state') or ('ready' if exists else 'n/a')}",
     ]
+    if minfo.get("unshard_command"):
+        lines.append(f"unshard:    {minfo['unshard_command']}")
+    lines.append(bundled)
     return "\n".join(lines)

@@ -16,7 +16,12 @@ from .active import (
     save_active,
 )
 from .ingest import _default_workers, ingest
-from .paths import DEFAULT_MODEL_ONNX, DEFAULT_TOKENIZER
+from .registry import (
+    DEFAULT_MODEL_ID,
+    PRESET_IDS,
+    all_models_status,
+    format_choice_outline,
+)
 from .search import format_multi, format_results, multi_search, search
 from .shard import shard_file, unshard_file
 
@@ -24,15 +29,19 @@ from .shard import shard_file, unshard_file
 def _add_model_args(p: argparse.ArgumentParser) -> None:
     p.add_argument(
         "--model",
-        type=Path,
-        default=DEFAULT_MODEL_ONNX,
-        help="Path to ONNX model (default: bundled MiniLM)",
+        type=str,
+        default=None,
+        help=(
+            "Embedding model preset or ONNX path. Presets: "
+            f"{', '.join(PRESET_IDS)} (default: {DEFAULT_MODEL_ID}). "
+            "Search defaults to the model recorded in the index config."
+        ),
     )
     p.add_argument(
         "--tokenizer",
         type=Path,
-        default=DEFAULT_TOKENIZER,
-        help="Path to tokenizer.json",
+        default=None,
+        help="Path to tokenizer.json (optional when using a preset)",
     )
 
 
@@ -130,7 +139,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_ms.add_argument("--json", action="store_true", help="Emit JSON (default for agents)")
     _add_model_args(p_ms)
 
-    p_st = sub.add_parser("status", help="Show the active (default) index")
+    p_st = sub.add_parser("status", help="Show the active (default) index + model readiness")
     p_st.add_argument("--json", action="store_true", help="Emit JSON")
 
     p_use = sub.add_parser(
@@ -147,6 +156,17 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         default=None,
         help="Optional corpus path recorded in state (default: index parent or prior)",
+    )
+
+    p_models = sub.add_parser(
+        "models",
+        help="List bundled embedding model presets and readiness (unshard needed?)",
+    )
+    p_models.add_argument("--json", action="store_true", help="Emit JSON")
+    p_models.add_argument(
+        "--choice",
+        action="store_true",
+        help="Print the first-ask model choice outline for agents",
     )
 
     p_sh = sub.add_parser("shard", help="Split a large weight file into <100MB parts")
@@ -182,21 +202,26 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "ingest":
         workers = args.workers if args.workers is not None else _default_workers()
         index_dir = args.index if args.index is not None else default_index_dir(args.source)
+        model = args.model if args.model is not None else DEFAULT_MODEL_ID
         print(
             f"Ingesting {args.source} → {index_dir} with {workers} worker(s) "
-            f"(cpu_count={os.cpu_count()})...",
+            f"(cpu_count={os.cpu_count()}, model={model})...",
             file=sys.stderr,
         )
-        cfg = ingest(
-            args.source,
-            index_dir=index_dir,
-            model_path=args.model,
-            tokenizer_path=args.tokenizer,
-            max_tokens=args.max_tokens,
-            overlap_tokens=args.overlap_tokens,
-            workers=workers,
-            batch_size=args.batch_size,
-        )
+        try:
+            cfg = ingest(
+                args.source,
+                index_dir=index_dir,
+                model=model,
+                tokenizer_path=args.tokenizer,
+                max_tokens=args.max_tokens,
+                overlap_tokens=args.overlap_tokens,
+                workers=workers,
+                batch_size=args.batch_size,
+            )
+        except FileNotFoundError as e:
+            print(str(e), file=sys.stderr)
+            return 1
         if not args.no_active:
             active = save_active(source=args.source, index_dir=index_dir)
             cfg["active"] = active
@@ -205,16 +230,20 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "search":
         index_dir = _resolve_search_index(parser, args.index)
-        results = search(
-            args.query,
-            index_dir=index_dir,
-            top_k=args.top_k,
-            model_path=args.model,
-            tokenizer_path=args.tokenizer,
-            path_contains=args.path_contains,
-            path_glob=args.path_glob,
-            path_prefix=args.path_prefix,
-        )
+        try:
+            results = search(
+                args.query,
+                index_dir=index_dir,
+                top_k=args.top_k,
+                model=args.model,
+                tokenizer_path=args.tokenizer,
+                path_contains=args.path_contains,
+                path_glob=args.path_glob,
+                path_prefix=args.path_prefix,
+            )
+        except (FileNotFoundError, ValueError) as e:
+            print(str(e), file=sys.stderr)
+            return 1
         print(format_results(results, as_json=args.json))
         return 0
 
@@ -227,22 +256,44 @@ def main(argv: list[str] | None = None) -> int:
         queries = json.loads(raw)
         if not isinstance(queries, list):
             parser.error("multi-search input must be a JSON list")
-        results = multi_search(
-            queries,
-            index_dir=index_dir,
-            top_k=args.top_k,
-            model_path=args.model,
-            tokenizer_path=args.tokenizer,
-        )
+        try:
+            results = multi_search(
+                queries,
+                index_dir=index_dir,
+                top_k=args.top_k,
+                model=args.model,
+                tokenizer_path=args.tokenizer,
+            )
+        except (FileNotFoundError, ValueError) as e:
+            print(str(e), file=sys.stderr)
+            return 1
         print(format_multi(results, as_json=args.json))
         return 0
 
     if args.command == "status":
         active = load_active()
         if args.json:
-            print(json.dumps(active, indent=2) if active else "null")
+            payload = {
+                "active": active,
+                "models": all_models_status(),
+            }
+            if active and active.get("index_dir"):
+                from .active import _index_model_info
+
+                payload["index_model"] = _index_model_info(Path(active["index_dir"]))
+            print(json.dumps(payload, indent=2))
         else:
             print(format_status(active))
+        return 0
+
+    if args.command == "models":
+        if args.choice:
+            print(format_choice_outline())
+            return 0
+        if args.json:
+            print(json.dumps(all_models_status(), indent=2))
+        else:
+            print(format_choice_outline())
         return 0
 
     if args.command == "use":

@@ -4,7 +4,7 @@ description: >-
   On-the-fly RAG over a local folder of docs or a codebase. Use when the user
   asks to search, retrieve, or answer questions from a document corpus without
   a hosted vector DB. Chooses between lightweight grep/ripgrep and local
-  embedding RAG with a bundled MiniLM ONNX model. Supports PDF/DOCX/PPTX
+  embedding RAG with bundled MiniLM / IBM Granite R2 ONNX models. Supports PDF/DOCX/PPTX
   ingest and multi-hop retrieval with a scratchpad.
 license: MIT
 ---
@@ -29,6 +29,48 @@ mention `.rag_index` — search uses the active index automatically.
 Agents: when the user names a folder to index, ingest it (sets active). For
 ordinary Q&A, run `search` / `multi-search` **without** `-i`. Only pass an
 explicit index path when the user is juggling several vector stores.
+
+## First embed: choose a model (required)
+
+On the **first** embed/index ask in a session (or when no index exists yet), you
+**must outline which model will be used** and let the user pick or confirm the
+default **before** ingesting.
+
+| Preset | When to suggest | Size / dim / ctx | Notes |
+| --- | --- | --- | --- |
+| `minilm` **(default)** | Tiny/offline-fast path, quick trials | ~87MB · 384-d · 256 tok | Ready after clone |
+| `granite-small` | Better retrieval, still small | ~94MB · 384-d · 8k | Ready after clone |
+| `granite` | Best quality | ~303MB · 768-d · 8k | **Unshard first** |
+
+```bash
+python -m on_the_fly_rag models          # print choice outline + readiness
+python -m on_the_fly_rag status          # active index model + shard state
+```
+
+Unshard Granite English R2 once if the user picks `granite`:
+
+```bash
+python -m on_the_fly_rag unshard --input models/granite-embedding-english-r2/model.onnx.part
+```
+
+Then ingest with `--model minilm|granite-small|granite`. The index `config.json`
+stores `model_id`; later search uses that model automatically (errors if weights
+are missing/unsharded). Re-ingest when switching models (384 vs 768 dims).
+
+Example first prompts:
+
+```text
+/on-the-fly-rag index this folder
+```
+
+→ Agent states/asks: MiniLM (default) vs Granite Small vs Granite English R2 →
+unshards if needed → ingest → active index records the model.
+
+```text
+/on-the-fly-rag index ./docs with granite-small
+```
+
+→ Skip the picker when the user already named a preset; still unshard if required.
 
 ## Decision guide: grep vs embed
 
@@ -58,13 +100,13 @@ Deps include **pypdf**, **python-docx**, **python-pptx** so `.pdf` / `.docx` /
 `.pptx` are extracted to plain text during ingest (same chunk → embed → store
 path as markdown/code).
 
-Default model is **vendored** at `models/all-MiniLM-L6-v2/model.onnx` (~87MB).
-No Hugging Face download is required at runtime.
-
-If weights were shipped as shards (`model.onnx.part00`, …):
+Default / fallback model is **vendored** MiniLM at
+`models/all-MiniLM-L6-v2/model.onnx` (~87MB). Also vendored: Granite Small R2
+(ready) and Granite English R2 (**sharded**). No Hugging Face download at runtime.
 
 ```bash
-python -m on_the_fly_rag unshard --input models/all-MiniLM-L6-v2/model.onnx.part
+# Granite English R2 (149M) — required once before --model granite
+python -m on_the_fly_rag unshard --input models/granite-embedding-english-r2/model.onnx.part
 ```
 
 ## Ingest (parallel CPU)
@@ -75,20 +117,21 @@ By default uses **all CPU cores** via process workers (`os.cpu_count()`).
 Override workers with `-j` / `--workers`:
 
 ```bash
-# Default: index beside the corpus + set active
+# Default: MiniLM, index beside the corpus + set active
 python -m on_the_fly_rag ingest /path/to/docs
-python -m on_the_fly_rag ingest /path/to/docs -j 4
+python -m on_the_fly_rag ingest /path/to/docs --model granite-small -j 4
+python -m on_the_fly_rag ingest /path/to/docs --model granite
 
 # Optional: custom index location (still sets active unless --no-active)
 python -m on_the_fly_rag ingest /path/to/docs -o /tmp/other_index
-python scripts/ingest.py /path/to/docs -o .rag_index -j 4
+python scripts/ingest.py /path/to/docs -o .rag_index -j 4 --model minilm
 ```
 
 Supported sources: text/code extensions **plus** `.pdf`, `.docx`, `.pptx`
 (slide body + speaker notes). Unparseable binaries are **logged and skipped**;
 ingest does not abort.
 
-Chunking stays under MiniLM's **256-token** window (~200 tokens + overlap).
+Chunking defaults stay ~200 tokens + overlap (safe for MiniLM's 256 window; Granite allows larger `--max-tokens` up to 8k).
 
 ## Active index: status / use
 
@@ -209,7 +252,8 @@ citations. If either hop is thin, retry with a broader query or drop the glob.
 
 1. Clarify the corpus root (folder / repo path).
 2. Choose grep vs embed using the table above.
-3. If embedding: ingest once (sets active / `<source>/.rag_index`), then search
+3. If embedding: **first** confirm model (MiniLM / Granite Small / Granite),
+   unshard if needed, ingest once (sets active + records `model_id`), then search
    **without** naming the index path.
 4. For multi-doc / compare / contradiction → use the **multi-hop loop**.
 5. Answer using retrieved chunks; quote paths. Do not invent file contents.
@@ -223,6 +267,14 @@ Users invoke this skill in Copilot with `/on-the-fly-rag` then a natural-languag
 
 ```text
 /on-the-fly-rag index ./docs and make it the default corpus
+```
+
+```text
+/on-the-fly-rag index this folder
+```
+
+```text
+/on-the-fly-rag index ./docs with granite-small
 ```
 
 ```text
@@ -245,13 +297,12 @@ Override example (multi-store):
 
 More copy-paste examples (grep vs embed, Office/PDF corpus, simple Q&A) live in the repo README **Prompt cookbook**.
 
-## Swapping a larger model
+## Models & sharding
 
-Replace `models/.../model.onnx` (and tokenizer) or pass `--model` / `--tokenizer`.
-If a weight file exceeds GitHub's 100MB limit, shard before commit:
+Presets: `minilm` | `granite-small` | `granite`. Custom ONNX: `--model path/to.onnx`.
+Granite English R2 is shipped sharded; consumers unshard once (command above).
+To shard a new weight before commit:
 
 ```bash
 python -m on_the_fly_rag shard path/to/big.onnx --shard-size 90000000
 ```
-
-Document unshard-on-first-use for consumers.

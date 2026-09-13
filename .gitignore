@@ -32,3 +32,6 @@ venv/
 # Test / temp artifacts
 /tmp/
 *.reassembled
+
+# Reassembled Granite English R2 weights (commit shards only; unshard locally)
+models/granite-embedding-english-r2/model.onnx

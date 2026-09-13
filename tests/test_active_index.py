@@ -123,7 +123,9 @@ class TestCliActiveDefaults(unittest.TestCase):
                     rc = main(["status", "--json"])
                 self.assertEqual(rc, 0)
                 st = json.loads(out2.getvalue())
-                self.assertEqual(Path(st["index_dir"]), index.resolve())
+                active = st["active"] if "active" in st else st
+                self.assertEqual(Path(active["index_dir"]), index.resolve())
+                self.assertIn("models", st)
 
                 # search without -i uses active
                 out3 = io.StringIO()

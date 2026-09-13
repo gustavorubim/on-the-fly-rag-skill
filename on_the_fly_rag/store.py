@@ -59,6 +59,7 @@ class VectorStore:
         self.config_path = self.index_dir / "config.json"
         self.chunks: List[StoredChunk] = []
         self.vectors: Optional[np.ndarray] = None
+        self.config: Dict[str, Any] = {}
 
     def save(
         self,
@@ -78,6 +79,7 @@ class VectorStore:
         self.config_path.write_text(json.dumps(cfg, indent=2), encoding="utf-8")
         self.chunks = list(chunks)
         self.vectors = vectors.astype(np.float32)
+        self.config = cfg
 
     def load(self) -> None:
         if not self.meta_path.is_file() or not self.vectors_path.is_file():
@@ -94,6 +96,13 @@ class VectorStore:
                 chunks.append(StoredChunk(**obj))
         self.chunks = chunks
         self.vectors = np.load(self.vectors_path)
+        if self.config_path.is_file():
+            try:
+                self.config = json.loads(self.config_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                self.config = {}
+        else:
+            self.config = {}
 
     def search(
         self,

@@ -7,18 +7,19 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import asdict
 from multiprocessing import get_context
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
 
 import numpy as np
 
 from .chunk import Chunk, chunk_path, iter_files, load_tokenizer
-from .embed import MiniLMEmbedder
-from .paths import DEFAULT_MODEL_ONNX, DEFAULT_TOKENIZER
+from .embed import OnnxEmbedder
+from .paths import DEFAULT_TOKENIZER
+from .registry import DEFAULT_MODEL_ID, resolve_model, spec_to_config
 from .store import StoredChunk, VectorStore
 
 # Module-level state for worker processes (set by initializer).
 _WORKER_TOKENIZER = None
-_WORKER_EMBEDDER: Optional[MiniLMEmbedder] = None
+_WORKER_EMBEDDER: Optional[OnnxEmbedder] = None
 _WORKER_ROOT: Optional[Path] = None
 _WORKER_MAX_TOKENS = 200
 _WORKER_OVERLAP = 40
@@ -56,13 +57,24 @@ def _chunk_one_file(path_str: str) -> List[Dict[str, Any]]:
     return [asdict(c) for c in chunks]
 
 
-def _init_embed_worker(model_path: str, tokenizer_path: str) -> None:
+def _init_embed_worker(
+    model_path: str,
+    tokenizer_path: str,
+    max_seq_length: int,
+    dim: int,
+    pooling: str,
+    model_id: str,
+) -> None:
     global _WORKER_EMBEDDER, _WORKER_MODEL, _WORKER_TOKENIZER_PATH
     _WORKER_MODEL = model_path
     _WORKER_TOKENIZER_PATH = tokenizer_path
-    _WORKER_EMBEDDER = MiniLMEmbedder(
+    _WORKER_EMBEDDER = OnnxEmbedder(
         model_path=model_path,
         tokenizer_path=tokenizer_path,
+        max_seq_length=max_seq_length,
+        dim=dim,
+        pooling=pooling,
+        model_id=model_id,
     )
 
 
@@ -121,18 +133,29 @@ def _embed_parallel(
     *,
     model_path: Path,
     tokenizer_path: Path,
+    max_seq_length: int,
+    dim: int,
+    pooling: str,
+    model_id: str,
     workers: int,
     batch_size: int = 32,
 ) -> np.ndarray:
     if not texts:
-        return np.zeros((0, 384), dtype=np.float32)
+        return np.zeros((0, dim), dtype=np.float32)
 
     batches: List[Tuple[int, List[str]]] = []
     for i in range(0, len(texts), batch_size):
         batches.append((len(batches), list(texts[i : i + batch_size])))
 
     if workers <= 1 or len(batches) == 1:
-        emb = MiniLMEmbedder(model_path=model_path, tokenizer_path=tokenizer_path)
+        emb = OnnxEmbedder(
+            model_path=model_path,
+            tokenizer_path=tokenizer_path,
+            max_seq_length=max_seq_length,
+            dim=dim,
+            pooling=pooling,
+            model_id=model_id,
+        )
         return emb.encode(list(texts), batch_size=batch_size)
 
     results: Dict[int, np.ndarray] = {}
@@ -140,7 +163,14 @@ def _embed_parallel(
         max_workers=workers,
         mp_context=get_context("spawn"),
         initializer=_init_embed_worker,
-        initargs=(str(model_path), str(tokenizer_path)),
+        initargs=(
+            str(model_path),
+            str(tokenizer_path),
+            max_seq_length,
+            dim,
+            pooling,
+            model_id,
+        ),
     ) as pool:
         futures = [pool.submit(_embed_batch, b) for b in batches]
         for fut in as_completed(futures):
@@ -155,19 +185,34 @@ def ingest(
     source: Path | str,
     *,
     index_dir: Path | str,
-    model_path: Path | str = DEFAULT_MODEL_ONNX,
-    tokenizer_path: Path | str = DEFAULT_TOKENIZER,
+    model: Optional[Union[str, Path]] = None,
+    model_path: Optional[Path | str] = None,
+    tokenizer_path: Optional[Path | str] = None,
     max_tokens: int = 200,
     overlap_tokens: int = 40,
     workers: Optional[int] = None,
     batch_size: int = 32,
     extensions: Optional[Sequence[str]] = None,
 ) -> Dict[str, Any]:
-    """Chunk + embed ``source`` into ``index_dir`` using ``workers`` CPU processes."""
+    """Chunk + embed ``source`` into ``index_dir`` using ``workers`` CPU processes.
+
+    ``model`` may be a preset id (``minilm``, ``granite-small``, ``granite``)
+    or an ONNX path. Legacy ``model_path`` / ``tokenizer_path`` still work.
+    """
     source = Path(source).resolve()
     index_dir = Path(index_dir)
-    model_path = Path(model_path)
-    tokenizer_path = Path(tokenizer_path)
+
+    if model is not None:
+        spec, onnx, tok = resolve_model(model, tokenizer=tokenizer_path)
+    elif model_path is not None:
+        spec, onnx, tok = resolve_model(
+            model_path, tokenizer=tokenizer_path or DEFAULT_TOKENIZER
+        )
+    else:
+        spec, onnx, tok = resolve_model(
+            DEFAULT_MODEL_ID, tokenizer=tokenizer_path
+        )
+
     if workers is None:
         workers = _default_workers()
     workers = max(1, int(workers))
@@ -175,11 +220,14 @@ def ingest(
     files = list(iter_files(source, extensions=extensions))
     root = source if source.is_dir() else source.parent
 
+    # Cap chunk size under the model context window (leave room for specials).
+    effective_max = min(max_tokens, max(32, spec.max_seq_length - 8))
+
     chunks = _chunk_files_parallel(
         files,
         root=root,
-        tokenizer_path=tokenizer_path,
-        max_tokens=max_tokens,
+        tokenizer_path=tok,
+        max_tokens=effective_max,
         overlap_tokens=overlap_tokens,
         workers=workers,
     )
@@ -187,8 +235,12 @@ def ingest(
     texts = [c.text for c in chunks]
     vectors = _embed_parallel(
         texts,
-        model_path=model_path,
-        tokenizer_path=tokenizer_path,
+        model_path=onnx,
+        tokenizer_path=tok,
+        max_seq_length=spec.max_seq_length,
+        dim=spec.dim,
+        pooling=spec.pooling,
+        model_id=spec.id,
         workers=workers,
         batch_size=batch_size,
     )
@@ -205,14 +257,15 @@ def ingest(
         for c in chunks
     ]
     store = VectorStore(index_dir)
-    config = {
+    config: Dict[str, Any] = {
         "source": str(source),
-        "model": str(model_path),
-        "max_tokens": max_tokens,
+        "max_tokens": effective_max,
         "overlap_tokens": overlap_tokens,
         "workers": workers,
         "files": len(files),
         "chunks": len(stored),
     }
+    config.update(spec_to_config(spec))
+    # Legacy key already set by spec_to_config as "model"
     store.save(stored, vectors, config=config)
     return config
