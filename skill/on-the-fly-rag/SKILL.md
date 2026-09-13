@@ -14,6 +14,22 @@ license: MIT
 Help the user retrieve context from a **local folder or codebase** using this
 repository's scripts. Prefer working software over abstractions.
 
+## Default UX: one main index
+
+**Day-to-day:** the user slash-calls this skill and asks to embed/index a folder.
+That corpus becomes the **active/default** index. Later questions do **not**
+mention `.rag_index` — search uses the active index automatically.
+
+| Rule | Detail |
+| --- | --- |
+| One corpus → one index | Prefer writing the store at `<source>/.rag_index` |
+| Active pointer | After ingest, workspace `.on-the-fly-rag.json` stores `{source, index_dir, updated_at}` |
+| Multi-store escape hatch | Different file groups → different indexes; pass `-i` / `--index` or `use` to switch |
+
+Agents: when the user names a folder to index, ingest it (sets active). For
+ordinary Q&A, run `search` / `multi-search` **without** `-i`. Only pass an
+explicit index path when the user is juggling several vector stores.
+
 ## Decision guide: grep vs embed
 
 | Prefer **lightweight search** (rg / grep / path filters) when… | Prefer **embedding RAG** when… |
@@ -53,13 +69,18 @@ python -m on_the_fly_rag unshard --input models/all-MiniLM-L6-v2/model.onnx.part
 
 ## Ingest (parallel CPU)
 
-Index a folder. By default uses **all CPU cores** via process workers
-(`os.cpu_count()`). Override with `-j` / `--workers`:
+Index a folder. Default index path is **`<source>/.rag_index`**; ingest also
+writes the **active** pointer (`.on-the-fly-rag.json` in the workspace cwd).
+By default uses **all CPU cores** via process workers (`os.cpu_count()`).
+Override workers with `-j` / `--workers`:
 
 ```bash
-python -m on_the_fly_rag ingest /path/to/docs --index .rag_index
-python -m on_the_fly_rag ingest /path/to/docs --index .rag_index -j 4
-# or
+# Default: index beside the corpus + set active
+python -m on_the_fly_rag ingest /path/to/docs
+python -m on_the_fly_rag ingest /path/to/docs -j 4
+
+# Optional: custom index location (still sets active unless --no-active)
+python -m on_the_fly_rag ingest /path/to/docs -o /tmp/other_index
 python scripts/ingest.py /path/to/docs -o .rag_index -j 4
 ```
 
@@ -69,12 +90,27 @@ ingest does not abort.
 
 Chunking stays under MiniLM's **256-token** window (~200 tokens + overlap).
 
-## Search (single query)
+## Active index: status / use
 
 ```bash
-python -m on_the_fly_rag search "how is auth handled?" --index .rag_index -k 5
-python -m on_the_fly_rag search "latency SLA" -i .rag_index --path-contains product_spec
-python -m on_the_fly_rag search "observed latency" -i .rag_index --glob '*.pptx'
+python -m on_the_fly_rag status
+python -m on_the_fly_rag status --json
+# Point active at an existing store (multi-store escape hatch)
+python -m on_the_fly_rag use /path/to/some/.rag_index
+python -m on_the_fly_rag use /path/to/other_index --source /path/to/docs
+```
+
+## Search (single query)
+
+Omit `-i` to use the **active** index (normal day-to-day). Pass `-i` only to
+override:
+
+```bash
+python -m on_the_fly_rag search "how is auth handled?" -k 5
+python -m on_the_fly_rag search "latency SLA" --path-contains product_spec
+python -m on_the_fly_rag search "observed latency" --glob '*.pptx'
+# Override when juggling several indexes:
+python -m on_the_fly_rag search "how is auth handled?" -i /path/to/other/.rag_index --json
 python scripts/search.py "how is auth handled?" -i .rag_index --json
 ```
 
@@ -89,10 +125,12 @@ Path filters (restrict retrieval to named files / subfolders):
 ## Multi-search (batch hops)
 
 ```bash
-python -m on_the_fly_rag multi-search queries.json -i .rag_index --json -k 5
+python -m on_the_fly_rag multi-search queries.json --json -k 5
 # or pipe JSON list on stdin
 echo '[{"id":"a","query":"...","path_glob":"*.pdf"}]' \
-  | python -m on_the_fly_rag multi-search -i .rag_index --json
+  | python -m on_the_fly_rag multi-search --json
+# Override:
+python -m on_the_fly_rag multi-search queries.json -i /path/to/other/.rag_index --json
 ```
 
 Each list item: string **or** object with `query`, optional `id`, `top_k`,
@@ -103,12 +141,12 @@ Each list item: string **or** object with `query`, optional `id`, `top_k`,
 
 Do **not** answer complex cross-doc questions with a single search. Loop:
 
-1. **Clarify** corpus root + whether an index exists; ingest if needed.
+1. **Clarify** corpus root + whether an index exists; ingest if needed (sets active).
 2. **Plan hops** — write 2–N retrieval queries. **When comparing Doc A vs Doc B
    (or any named files), always attach path filters** (`--glob` / `--path-contains`
    / `--path-prefix`) per hop. Unfiltered search often conflates docs that
    cross-reference each other (e.g. Ops notes quoting Spec numbers).
-3. **Retrieve** via `search` and/or `multi-search`.
+3. **Retrieve** via `search` and/or `multi-search` (active index; no `-i` unless override).
 4. **Scratchpad** — append structured notes after each hop (template below).
 5. **Verify coverage** — if a hop is thin (`coverage.thin_hops` / low scores /
    missing an expected doc), replan and re-retrieve (new query or looser filter).
@@ -154,14 +192,14 @@ re-retrieve.
 ### Example: compare two docs
 
 ```bash
-# After ingesting the corpus:
+# After ingesting the corpus (active index set):
 cat > /tmp/q.json <<'JSON'
 [
   {"id":"spec","query":"p99 latency SLA","path_glob":"*product_spec*"},
   {"id":"ops","query":"observed p99 latency","path_glob":"*ops_status*"}
 ]
 JSON
-python -m on_the_fly_rag multi-search /tmp/q.json -i .rag_index --json -k 3
+python -m on_the_fly_rag multi-search /tmp/q.json --json -k 3
 ```
 
 Then fill the scratchpad, note Spec 50ms vs Ops 120ms, and answer with both
@@ -171,17 +209,24 @@ citations. If either hop is thin, retry with a broader query or drop the glob.
 
 1. Clarify the corpus root (folder / repo path).
 2. Choose grep vs embed using the table above.
-3. If embedding: ingest (if no fresh `.rag_index`), then search top-k.
+3. If embedding: ingest once (sets active / `<source>/.rag_index`), then search
+   **without** naming the index path.
 4. For multi-doc / compare / contradiction → use the **multi-hop loop**.
 5. Answer using retrieved chunks; quote paths. Do not invent file contents.
-6. Never commit secrets; indexes under `.rag_index/` are gitignored.
+6. Never commit secrets; indexes under `.rag_index/` and `.on-the-fly-rag.json`
+   are gitignored.
 
 ## Example user prompts
 
-Users invoke this skill in Copilot with `/on-the-fly-rag` then a natural-language ask. Typical prompts:
+Users invoke this skill in Copilot with `/on-the-fly-rag` then a natural-language ask.
+**Prefer prompts that do not mention `.rag_index`.** Typical prompts:
 
 ```text
-/on-the-fly-rag ingest this folder ./docs into .rag_index
+/on-the-fly-rag index ./docs and make it the default corpus
+```
+
+```text
+/on-the-fly-rag what discusses authentication? cite file paths
 ```
 
 ```text
@@ -190,6 +235,12 @@ Users invoke this skill in Copilot with `/on-the-fly-rag` then a natural-languag
 
 ```text
 /on-the-fly-rag Pro pricing vs Spec rate limits: plan hops, keep a scratchpad, re-retrieve if coverage is thin, then answer with citations
+```
+
+Override example (multi-store):
+
+```text
+/on-the-fly-rag search using index /tmp/legal_corpus/.rag_index for retention policy; cite paths
 ```
 
 More copy-paste examples (grep vs embed, Office/PDF corpus, simple Q&A) live in the repo README **Prompt cookbook**.

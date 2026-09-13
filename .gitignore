@@ -12,6 +12,7 @@ venv/
 .python-version
 
 # Indexes / caches (do NOT ignore bundled models/)
+.on-the-fly-rag.json
 .rag_index/
 **/.rag_index/
 *.rag_index/

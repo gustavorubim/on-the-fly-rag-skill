@@ -14,14 +14,14 @@ No hosted vector DB. No Hugging Face download for the default model after clone.
 | Path | Purpose |
 | --- | --- |
 | `.github/skills/on-the-fly-rag/SKILL.md` | Copilot project skill (also under `skill/on-the-fly-rag/`) |
-| `on_the_fly_rag/` | Python package: extract, chunk, embed, ingest, search, multi-search, shard |
+| `on_the_fly_rag/` | Python package: extract, chunk, embed, ingest, search, multi-search, active index, shard |
 | `scripts/` | Thin CLI wrappers (`ingest.py`, `search.py`, `multi_search.py`, `shard.py`, `unshard.py`) |
 | `models/all-MiniLM-L6-v2/` | Vendored ONNX weights + tokenizer (**~87MB**, &lt;100MB) |
 | `fixtures/sample_docs/` | Tiny text corpus for offline tests |
 | `fixtures/office/` | Minimal PDF/DOCX/PPTX fixtures |
 | `fixtures/eval_corpus/` | Multi-doc NovaSync corpus (pdf+docx+pptx+md) for multi-hop eval |
 | `docs/eval.md` | Multi-hop eval notes / queries / outcomes |
-| `tests/` | Chunk / extract / ingest+search / multi-search / shard smoke tests |
+| `tests/` | Chunk / extract / ingest+search / multi-search / active-index / shard smoke tests |
 
 ## Install (Copilot skill)
 
@@ -66,26 +66,28 @@ Unparseable Office/PDF files are **logged and skipped** (ingest continues).
 
 After the skill is installed, invoke it in Copilot CLI with `/on-the-fly-rag` (skill name from `SKILL.md`), then ask in natural language. Copilot may also auto-select the skill when your ask matches its description.
 
+**Default UX:** index a folder once → that becomes the **active** corpus. Day-to-day questions do **not** mention `.rag_index`. Different file groups can use different indexes; name an index path only when you need the multi-store escape hatch.
+
 Copy-paste examples (what you type):
 
-### 1. Ingest a folder
+### 1. Ingest a folder (sets the default / active index)
 
 ```text
-/on-the-fly-rag ingest this folder ./docs into .rag_index
+/on-the-fly-rag index ./docs and make it the default corpus
 ```
 
 ```text
-/on-the-fly-rag index ./fixtures/sample_docs — use the default parallel workers and store under .rag_index
+/on-the-fly-rag ingest ./fixtures/sample_docs with default parallel workers
 ```
 
-### 2. Semantic search / Q&A
+### 2. Semantic search / Q&A (no index path)
 
 ```text
-/on-the-fly-rag using .rag_index, what discusses authentication? cite file paths
+/on-the-fly-rag what discusses authentication? cite file paths
 ```
 
 ```text
-/on-the-fly-rag search the index for how ingest picks CPU workers; quote the top chunks
+/on-the-fly-rag how does ingest pick CPU workers? quote the top chunks
 ```
 
 ### 3. Grep vs embed (lightweight first)
@@ -121,34 +123,52 @@ Copy-paste examples (what you type):
 ### 6. Office / PDF mixed corpus
 
 ```text
-/on-the-fly-rag ingest ./fixtures/eval_corpus (pdf/docx/pptx/md) into .rag_index, then summarize auth drift between Spec and Ops
+/on-the-fly-rag ingest ./fixtures/eval_corpus (pdf/docx/pptx/md), then summarize auth drift between Spec and Ops
+```
+
+### 7. Override (multi-store escape hatch)
+
+```text
+/on-the-fly-rag search using index /tmp/legal_corpus/.rag_index for retention policy; cite paths
 ```
 
 For the NovaSync multi-doc eval (Spec 50ms vs Ops 120ms, OAuth2 vs API keys, Pro pricing), see [docs/eval.md](docs/eval.md). CLI equivalents live in [CLI usage](#cli-usage) below.
 
 ## CLI usage
 
+**Defaults:** ingest writes `<source>/.rag_index` and sets workspace active state
+(`.on-the-fly-rag.json`). `search` / `multi-search` use that active index when
+`-i` / `--index` is omitted. Pass `-i` to override; `status` / `use` inspect or
+switch the active pointer.
+
 ```bash
 # Ingest (parallel across CPU cores by default) — includes PDF/DOCX/PPTX
-python -m on_the_fly_rag ingest ./fixtures/sample_docs --index .rag_index
-python -m on_the_fly_rag ingest ./fixtures/eval_corpus --index .rag_index -j 4
+# → ./fixtures/sample_docs/.rag_index + sets active
+python -m on_the_fly_rag ingest ./fixtures/sample_docs
+python -m on_the_fly_rag ingest ./fixtures/eval_corpus -j 4
 
-# Search (+ path filters)
-python -m on_the_fly_rag search "parallel CPU workers" --index .rag_index -k 5
-python -m on_the_fly_rag search "latency SLA" -i .rag_index --path-contains product_spec
-python -m on_the_fly_rag search "observed latency" -i .rag_index --glob '*.pptx'
-python -m on_the_fly_rag search "auth secrets" -i .rag_index --json
+# Active index helpers
+python -m on_the_fly_rag status
+python -m on_the_fly_rag use ./fixtures/eval_corpus/.rag_index
 
-# Multi-hop batch (compare 2 docs)
+# Search (active index; no -i needed)
+python -m on_the_fly_rag search "parallel CPU workers" -k 5
+python -m on_the_fly_rag search "latency SLA" --path-contains product_spec
+python -m on_the_fly_rag search "observed latency" --glob '*.pptx'
+python -m on_the_fly_rag search "auth secrets" --json
+# Override when juggling several stores:
+python -m on_the_fly_rag search "auth secrets" -i /tmp/other/.rag_index --json
+
+# Multi-hop batch (compare 2 docs) — uses active index
 cat > /tmp/nova_hops.json <<'JSON'
 [
   {"id":"spec","query":"p99 latency SLA milliseconds","path_glob":"*product_spec*"},
   {"id":"ops","query":"observed p99 latency milliseconds","path_glob":"*ops_status*"}
 ]
 JSON
-python -m on_the_fly_rag multi-search /tmp/nova_hops.json -i .rag_index --json -k 3
+python -m on_the_fly_rag multi-search /tmp/nova_hops.json --json -k 3
 
-# Same via scripts/
+# Same via scripts/ (explicit -i/-o still supported)
 python scripts/ingest.py ./docs -o .rag_index -j 8
 python scripts/search.py "how does ingest work?" -i .rag_index
 python scripts/multi_search.py /tmp/nova_hops.json -i .rag_index --json
@@ -191,7 +211,8 @@ docs/ (md/txt/code + pdf/docx/pptx)
        ──► extract (Office/PDF → text) or UTF-8 read
        ──► chunk (token-aware, ~200 tok + overlap)
        ──► embed (ONNX all-MiniLM-L6-v2, mean-pool + L2)
-       ──► .rag_index/{vectors.npy, chunks.jsonl, config.json}
+       ──► <source>/.rag_index/{vectors.npy, chunks.jsonl, config.json}
+       ──► .on-the-fly-rag.json  (active: {source, index_dir, updated_at})
 query ──► embed ──► cosine top-k (+ optional path/glob) ──► paths + snippets
 multi ──► N queries (batch) ──► coverage stats for verify step
 ```
@@ -200,6 +221,7 @@ multi ──► N queries (batch) ──► coverage stats for verify step
 - **Chunking:** token-aware via `tokenizers`; stays under 256 (default max ~200 + CLS/SEP)
 - **Extractors:** `on_the_fly_rag/extract.py` is the only place binary formats are handled
 - **Store:** numpy float32 matrix + JSONL metadata (no SQLite required)
+- **Active index:** one default corpus pointer in workspace `.on-the-fly-rag.json` (override with `-i` / `use`)
 - **Shard/unshard:** split oversized weights for GitHub’s 100MB file limit
 
 ```bash

@@ -1,4 +1,4 @@
-"""argparse CLI for ingest / search / multi-search / shard / unshard."""
+"""argparse CLI for ingest / search / multi-search / status / use / shard / unshard."""
 
 from __future__ import annotations
 
@@ -8,6 +8,13 @@ import os
 import sys
 from pathlib import Path
 
+from .active import (
+    default_index_dir,
+    format_status,
+    load_active,
+    resolve_index_dir,
+    save_active,
+)
 from .ingest import _default_workers, ingest
 from .paths import DEFAULT_MODEL_ONNX, DEFAULT_TOKENIZER
 from .search import format_multi, format_results, multi_search, search
@@ -66,8 +73,13 @@ def build_parser() -> argparse.ArgumentParser:
         "--index",
         "-o",
         type=Path,
-        default=Path(".rag_index"),
-        help="Output index directory (default: .rag_index)",
+        default=None,
+        help="Output index directory (default: <source>/.rag_index)",
+    )
+    p_ing.add_argument(
+        "--no-active",
+        action="store_true",
+        help="Do not update the workspace active-index state after ingest",
     )
     p_ing.add_argument(
         "--workers",
@@ -87,8 +99,8 @@ def build_parser() -> argparse.ArgumentParser:
         "--index",
         "-i",
         type=Path,
-        default=Path(".rag_index"),
-        help="Index directory",
+        default=None,
+        help="Index directory (default: active index from .on-the-fly-rag.json)",
     )
     p_se.add_argument("--top-k", "-k", type=int, default=5)
     _add_path_filter_args(p_se)
@@ -111,12 +123,31 @@ def build_parser() -> argparse.ArgumentParser:
         "--index",
         "-i",
         type=Path,
-        default=Path(".rag_index"),
-        help="Index directory",
+        default=None,
+        help="Index directory (default: active index from .on-the-fly-rag.json)",
     )
     p_ms.add_argument("--top-k", "-k", type=int, default=5)
     p_ms.add_argument("--json", action="store_true", help="Emit JSON (default for agents)")
     _add_model_args(p_ms)
+
+    p_st = sub.add_parser("status", help="Show the active (default) index")
+    p_st.add_argument("--json", action="store_true", help="Emit JSON")
+
+    p_use = sub.add_parser(
+        "use",
+        help="Set the active index to an existing index directory",
+    )
+    p_use.add_argument(
+        "index_dir",
+        type=Path,
+        help="Existing index directory (must contain vectors.npy + chunks.jsonl)",
+    )
+    p_use.add_argument(
+        "--source",
+        type=Path,
+        default=None,
+        help="Optional corpus path recorded in state (default: index parent or prior)",
+    )
 
     p_sh = sub.add_parser("shard", help="Split a large weight file into <100MB parts")
     p_sh.add_argument("input", type=Path)
@@ -136,20 +167,29 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _resolve_search_index(parser: argparse.ArgumentParser, explicit: Path | None) -> Path:
+    try:
+        return resolve_index_dir(explicit, require_exists=True)
+    except FileNotFoundError as e:
+        parser.error(str(e))
+        raise  # unreachable; keeps type checkers happy
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
 
     if args.command == "ingest":
         workers = args.workers if args.workers is not None else _default_workers()
+        index_dir = args.index if args.index is not None else default_index_dir(args.source)
         print(
-            f"Ingesting {args.source} with {workers} worker(s) "
+            f"Ingesting {args.source} → {index_dir} with {workers} worker(s) "
             f"(cpu_count={os.cpu_count()})...",
             file=sys.stderr,
         )
         cfg = ingest(
             args.source,
-            index_dir=args.index,
+            index_dir=index_dir,
             model_path=args.model,
             tokenizer_path=args.tokenizer,
             max_tokens=args.max_tokens,
@@ -157,13 +197,17 @@ def main(argv: list[str] | None = None) -> int:
             workers=workers,
             batch_size=args.batch_size,
         )
+        if not args.no_active:
+            active = save_active(source=args.source, index_dir=index_dir)
+            cfg["active"] = active
         print(json.dumps(cfg, indent=2))
         return 0
 
     if args.command == "search":
+        index_dir = _resolve_search_index(parser, args.index)
         results = search(
             args.query,
-            index_dir=args.index,
+            index_dir=index_dir,
             top_k=args.top_k,
             model_path=args.model,
             tokenizer_path=args.tokenizer,
@@ -175,6 +219,7 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if args.command == "multi-search":
+        index_dir = _resolve_search_index(parser, args.index)
         if args.queries_file is not None:
             raw = args.queries_file.read_text(encoding="utf-8")
         else:
@@ -184,12 +229,44 @@ def main(argv: list[str] | None = None) -> int:
             parser.error("multi-search input must be a JSON list")
         results = multi_search(
             queries,
-            index_dir=args.index,
+            index_dir=index_dir,
             top_k=args.top_k,
             model_path=args.model,
             tokenizer_path=args.tokenizer,
         )
         print(format_multi(results, as_json=args.json))
+        return 0
+
+    if args.command == "status":
+        active = load_active()
+        if args.json:
+            print(json.dumps(active, indent=2) if active else "null")
+        else:
+            print(format_status(active))
+        return 0
+
+    if args.command == "use":
+        index_dir = Path(args.index_dir).resolve()
+        if not (index_dir / "vectors.npy").is_file() or not (
+            index_dir / "chunks.jsonl"
+        ).is_file():
+            parser.error(
+                f"Not a usable index (need vectors.npy + chunks.jsonl): {index_dir}"
+            )
+        source = args.source
+        if source is None:
+            prior = load_active()
+            if prior and Path(prior.get("index_dir", "")).resolve() == index_dir:
+                source = Path(prior["source"])
+            else:
+                # Prefer parent when index is <source>/.rag_index
+                source = (
+                    index_dir.parent
+                    if index_dir.name == ".rag_index"
+                    else index_dir.parent
+                )
+        active = save_active(source=source, index_dir=index_dir)
+        print(json.dumps(active, indent=2))
         return 0
 
     if args.command == "shard":
