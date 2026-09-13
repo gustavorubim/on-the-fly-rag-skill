@@ -6,14 +6,20 @@ import json
 import tempfile
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[1]
+SKILL_ROOT = Path(__file__).resolve().parents[1]
+# Fixtures live at the development repo root (skill_root/.github/skills -> repo)
+REPO_ROOT = SKILL_ROOT
+for cand in (SKILL_ROOT.parents[2], SKILL_ROOT.parents[1], SKILL_ROOT):
+    if (cand / "fixtures" / "eval_corpus").is_dir():
+        REPO_ROOT = cand
+        break
 import sys
-sys.path.insert(0, str(ROOT))
+sys.path.insert(0, str(SKILL_ROOT))
 
 from on_the_fly_rag.ingest import ingest
 from on_the_fly_rag.search import coverage_stats, multi_search, search
 
-EVAL = ROOT / "fixtures" / "eval_corpus"
+EVAL = REPO_ROOT / "fixtures" / "eval_corpus"
 
 
 def show(title, results):

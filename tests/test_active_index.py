@@ -13,7 +13,8 @@ from pathlib import Path
 from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT))
+SKILL_ROOT = ROOT / ".github" / "skills" / "on-the-fly-rag"
+sys.path.insert(0, str(SKILL_ROOT))
 
 from on_the_fly_rag.active import (
     default_index_dir,

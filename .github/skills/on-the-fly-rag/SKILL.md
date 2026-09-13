@@ -12,7 +12,7 @@ license: MIT
 # On-the-fly RAG
 
 Help the user retrieve context from a **local folder or codebase** using this
-repository's scripts. Prefer working software over abstractions.
+**self-contained skill package** (this folder). Prefer working software over abstractions.
 
 ## Default UX: one main index
 
@@ -87,25 +87,32 @@ import/link graph with rg — then decide.
 
 ## Setup (once per machine)
 
-From the clone of this skill repo (or a checkout that includes `on_the_fly_rag/`
-and `models/`):
+This folder **is** the skill package (`SKILL.md` + `on_the_fly_rag/` + `models/` +
+`scripts/` + deps). Install by copying **this entire directory**:
 
 ```bash
+cp -R .github/skills/on-the-fly-rag ~/.copilot/skills/on-the-fly-rag
+cd ~/.copilot/skills/on-the-fly-rag   # or wherever you copied it
 python3 -m venv .venv
-source .venv/bin/activate   # Windows: .venv\\Scripts\\activate
+source .venv/bin/activate   # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
+# optional: pip install -e .
 ```
+
+Run all CLIs **from the skill root** (this folder), or set `PYTHONPATH=.`, or use
+`pip install -e .` so `python -m on_the_fly_rag` works from anywhere.
 
 Deps include **pypdf**, **python-docx**, **python-pptx** so `.pdf` / `.docx` /
 `.pptx` are extracted to plain text during ingest (same chunk → embed → store
 path as markdown/code).
 
 Default / fallback model is **vendored** MiniLM at
-`models/all-MiniLM-L6-v2/model.onnx` (~87MB). Also vendored: Granite Small R2
-(ready) and Granite English R2 (**sharded**). No Hugging Face download at runtime.
+`models/all-MiniLM-L6-v2/model.onnx` (~87MB) next to this package. Also vendored:
+Granite Small R2 (ready) and Granite English R2 (**sharded**). No Hugging Face
+download at runtime.
 
 ```bash
-# Granite English R2 (149M) — required once before --model granite
+# From skill root — Granite English R2 (149M); required once before --model granite
 python -m on_the_fly_rag unshard --input models/granite-embedding-english-r2/model.onnx.part
 ```
 
@@ -295,7 +302,7 @@ Override example (multi-store):
 /on-the-fly-rag search using index /tmp/legal_corpus/.rag_index for retention policy; cite paths
 ```
 
-More copy-paste examples (grep vs embed, Office/PDF corpus, simple Q&A) live in the repo README **Prompt cookbook**.
+More copy-paste examples live in the development repo root README **Prompt cookbook** (fixtures/tests stay at repo root; this folder is the distributable skill).
 
 ## Models & sharding
 

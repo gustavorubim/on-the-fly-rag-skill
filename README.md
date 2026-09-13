@@ -11,45 +11,67 @@ No hosted vector DB. No Hugging Face download after clone (weights are vendored)
 
 ## What’s included
 
+**Distributable skill unit** (copy one folder):
+
 | Path | Purpose |
 | --- | --- |
-| `.github/skills/on-the-fly-rag/SKILL.md` | Copilot project skill (also under `skill/on-the-fly-rag/`) |
-| `on_the_fly_rag/` | Python package: extract, chunk, embed, ingest, search, multi-search, active index, shard |
-| `scripts/` | Thin CLI wrappers (`ingest.py`, `search.py`, `multi_search.py`, `shard.py`, `unshard.py`) |
-| `models/all-MiniLM-L6-v2/` | Default MiniLM ONNX + tokenizer (**~87MB**) |
-| `models/granite-embedding-*-english-r2/` | IBM Granite R2 ONNX (small ready; english **sharded**, unshard first) |
+| `.github/skills/on-the-fly-rag/` | **Canonical self-contained skill package** |
+| `…/SKILL.md` | Copilot skill instructions |
+| `…/on_the_fly_rag/` | Python package: extract, chunk, embed, ingest, search, multi-search, active index, shard |
+| `…/scripts/` | Thin CLI wrappers (`ingest.py`, `search.py`, `multi_search.py`, `shard.py`, `unshard.py`) |
+| `…/models/all-MiniLM-L6-v2/` | Default MiniLM ONNX + tokenizer (**~87MB**) |
+| `…/models/granite-embedding-*-english-r2/` | IBM Granite R2 ONNX (small ready; english **sharded**, unshard first) |
+| `…/requirements.txt` / `pyproject.toml` | Pinned deps + install metadata |
+
+**Development repo root** (not required for skill install):
+
+| Path | Purpose |
+| --- | --- |
 | `fixtures/sample_docs/` | Tiny text corpus for offline tests |
 | `fixtures/office/` | Minimal PDF/DOCX/PPTX fixtures |
 | `fixtures/eval_corpus/` | Multi-doc NovaSync corpus (pdf+docx+pptx+md) for multi-hop eval |
 | `docs/eval.md` | Multi-hop eval notes / queries / outcomes |
 | `tests/` | Chunk / extract / ingest+search / multi-search / active-index / shard smoke tests |
+| `skill/on-the-fly-rag/` | Pointer README → canonical package above |
 
 ## Install (Copilot skill)
+
+Copy **one folder** — the entire self-contained package:
 
 ### Personal skill (all projects)
 
 ```bash
 git clone https://github.com/gustavorubim/on-the-fly-rag-skill.git
 mkdir -p ~/.copilot/skills
-cp -R on-the-fly-rag-skill/skill/on-the-fly-rag ~/.copilot/skills/
-# Keep the clone — scripts + models are referenced from the skill instructions.
-# Or add the clone path and rely on .github/skills inside it as a project skill.
+cp -R on-the-fly-rag-skill/.github/skills/on-the-fly-rag ~/.copilot/skills/on-the-fly-rag
+cd ~/.copilot/skills/on-the-fly-rag
+python3 -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt
+# optional: pip install -e .
 ```
 
 Reload skills in Copilot CLI: `/skills reload`, then `/skills info on-the-fly-rag`.
 
 ### Project skill (this or any repo)
 
-Copy or submodule so the skill lives at:
+Copy the whole package (not only `SKILL.md`) so the tree is:
 
 ```text
-.github/skills/on-the-fly-rag/SKILL.md
+.github/skills/on-the-fly-rag/
+  SKILL.md
+  on_the_fly_rag/
+  models/
+  scripts/
+  requirements.txt
+  pyproject.toml
 ```
 
 ### Python deps (required for embed path)
 
+Run from the **skill package directory** (after copy, or from the clone path below):
+
 ```bash
-cd on-the-fly-rag-skill
+cd .github/skills/on-the-fly-rag   # or ~/.copilot/skills/on-the-fly-rag
 python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 ```
@@ -84,6 +106,7 @@ On the **first** embed/index ask, the agent must outline which model will be use
 Agent should present MiniLM vs Granite Small R2 vs Granite English R2 (size/quality + unshard need), then unshard if needed, ingest with that model, and record `model_id` in the index `config.json` so search matches.
 
 ```bash
+# From .github/skills/on-the-fly-rag (or after pip install -e .)
 python -m on_the_fly_rag models          # choice outline + readiness
 python -m on_the_fly_rag models --json
 ```
@@ -190,6 +213,8 @@ For the NovaSync multi-doc eval (Spec 50ms vs Ops 120ms, OAuth2 vs API keys, Pro
 
 ## CLI usage
 
+Run from `.github/skills/on-the-fly-rag` (skill root), or `pip install -e` that folder / set `PYTHONPATH` to it. Fixture paths below are relative to the **repo root**.
+
 **Defaults:** ingest writes `<source>/.rag_index` and sets workspace active state
 (`.on-the-fly-rag.json`). `search` / `multi-search` use that active index when
 `-i` / `--index` is omitted. Pass `-i` to override; `status` / `use` inspect or
@@ -222,7 +247,7 @@ cat > /tmp/nova_hops.json <<'JSON'
 JSON
 python -m on_the_fly_rag multi-search /tmp/nova_hops.json --json -k 3
 
-# Same via scripts/ (explicit -i/-o still supported)
+# Same via scripts/ from the skill package (explicit -i/-o still supported)
 python scripts/ingest.py ./docs -o .rag_index -j 8
 python scripts/search.py "how does ingest work?" -i .rag_index
 python scripts/multi_search.py /tmp/nova_hops.json -i .rag_index --json
@@ -273,7 +298,7 @@ multi ──► N queries (batch) ──► coverage stats for verify step
 
 - **Models:** MiniLM (default, 384-d) or IBM Granite English R2 small/full (384/768-d, 8k ctx); see table above
 - **Chunking:** token-aware via `tokenizers`; stays under 256 (default max ~200 + CLS/SEP)
-- **Extractors:** `on_the_fly_rag/extract.py` is the only place binary formats are handled
+- **Extractors:** `.github/skills/on-the-fly-rag/on_the_fly_rag/extract.py` is the only place binary formats are handled
 - **Store:** numpy float32 matrix + JSONL metadata (no SQLite required)
 - **Active index:** one default corpus pointer in workspace `.on-the-fly-rag.json` (override with `-i` / `use`)
 - **Shard/unshard:** split oversized weights for GitHub’s 100MB file limit
@@ -298,8 +323,13 @@ Pass `--model /path/to/model.onnx` (and `--tokenizer` if needed). Prefer presets
 
 ## Tests
 
+From the **repo root** (tests + fixtures stay here; the package lives under `.github/skills/…`):
+
 ```bash
-source .venv/bin/activate
+cd .github/skills/on-the-fly-rag && python3 -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt
+cd ../../..   # back to repo root
+source .github/skills/on-the-fly-rag/.venv/bin/activate
 python -m unittest discover -s tests -v
 ```
 

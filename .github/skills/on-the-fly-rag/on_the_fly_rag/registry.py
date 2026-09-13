@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from .paths import REPO_ROOT
+from .paths import SKILL_ROOT
 from .shard import unshard_file
 
 DEFAULT_MODEL_ID = "minilm"
@@ -53,7 +53,7 @@ class ModelSpec:
 
 
 def _bundled() -> Dict[str, ModelSpec]:
-    models = REPO_ROOT / "models"
+    models = SKILL_ROOT / "models"
     return {
         "minilm": ModelSpec(
             id="minilm",
@@ -130,7 +130,7 @@ def get_preset(model_id: str) -> ModelSpec:
 def _rel(path: Path) -> str:
     """Prefer repo-relative paths in user-facing commands."""
     try:
-        return str(path.resolve().relative_to(REPO_ROOT.resolve()))
+        return str(path.resolve().relative_to(SKILL_ROOT.resolve()))
     except ValueError:
         return str(path)
 
@@ -189,7 +189,7 @@ def ensure_onnx(spec: ModelSpec, *, auto_unshard: bool = False) -> Path:
         )
     raise FileNotFoundError(
         f"ONNX model not found for {spec.id} at {spec.onnx_path}. "
-        "Clone the full repo including models/ or restore the weight file."
+        "Restore the skill package models/ folder or re-copy the on-the-fly-rag skill."
     )
 
 

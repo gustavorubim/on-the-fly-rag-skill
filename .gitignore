@@ -21,7 +21,7 @@ venv/
 .mypy_cache/
 .ruff_cache/
 *.npy
-!models/**
+!.github/skills/on-the-fly-rag/models/**
 
 # OS / editors
 .DS_Store
@@ -34,4 +34,4 @@ venv/
 *.reassembled
 
 # Reassembled Granite English R2 weights (commit shards only; unshard locally)
-models/granite-embedding-english-r2/model.onnx
+.github/skills/on-the-fly-rag/models/granite-embedding-english-r2/model.onnx
