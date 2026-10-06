@@ -11,6 +11,7 @@ from typing import Iterator, List, Optional, Sequence
 from tokenizers import Tokenizer
 
 from .extract import BINARY_EXTENSIONS, try_load_document
+from .media import MEDIA_EXTENSIONS
 
 logger = logging.getLogger(__name__)
 
@@ -50,6 +51,8 @@ TEXT_EXTENSIONS = (
 )
 
 DEFAULT_EXTENSIONS = TEXT_EXTENSIONS + tuple(sorted(BINARY_EXTENSIONS))
+# Text + documents + images/video/audio (media only embedded by multimodal models).
+ALL_EXTENSIONS = DEFAULT_EXTENSIONS + MEDIA_EXTENSIONS
 
 
 @dataclass

@@ -6,7 +6,7 @@ import fnmatch
 import json
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 import numpy as np
 
@@ -19,6 +19,43 @@ class StoredChunk:
     start_char: int
     end_char: int
     token_count: int
+    # Multimodal metadata (defaults keep old text-only indexes loadable).
+    modality: str = "text"  # text | image | video | audio
+    source: Optional[str] = None  # source file path (no #fragment)
+    start_sec: Optional[float] = None
+    end_sec: Optional[float] = None
+    frame_start: Optional[int] = None
+    frame_end: Optional[int] = None
+    title: Optional[str] = None
+
+
+_STORED_FIELDS = set(StoredChunk.__dataclass_fields__)  # type: ignore[attr-defined]
+
+
+def chunk_to_json(c: StoredChunk) -> Dict[str, Any]:
+    """Serialize, omitting multimodal fields that are unset (old format for text)."""
+    d = asdict(c)
+    for k in ("source", "start_sec", "end_sec", "frame_start", "frame_end", "title"):
+        if d.get(k) is None:
+            d.pop(k, None)
+    if d.get("modality") == "text":
+        d.pop("modality", None)
+    return d
+
+
+def parse_modalities(value: Optional[Iterable[str] | str]) -> Optional[set]:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        parts = [v.strip().lower() for v in value.replace("|", ",").split(",")]
+    else:
+        parts = [str(v).strip().lower() for v in value]
+    mods = {p for p in parts if p}
+    valid = {"text", "image", "video", "audio"}
+    bad = mods - valid
+    if bad:
+        raise ValueError(f"unknown modality {sorted(bad)}; choose from {sorted(valid)}")
+    return mods or None
 
 
 def _path_matches(
@@ -71,7 +108,7 @@ class VectorStore:
         self.index_dir.mkdir(parents=True, exist_ok=True)
         with self.meta_path.open("w", encoding="utf-8") as f:
             for c in chunks:
-                f.write(json.dumps(asdict(c), ensure_ascii=False) + "\n")
+                f.write(json.dumps(chunk_to_json(c), ensure_ascii=False) + "\n")
         np.save(self.vectors_path, vectors.astype(np.float32))
         cfg = dict(config or {})
         cfg.setdefault("count", len(chunks))
@@ -93,7 +130,7 @@ class VectorStore:
                 if not line:
                     continue
                 obj = json.loads(line)
-                chunks.append(StoredChunk(**obj))
+                chunks.append(StoredChunk(**{k: v for k, v in obj.items() if k in _STORED_FIELDS}))
         self.chunks = chunks
         self.vectors = np.load(self.vectors_path)
         if self.config_path.is_file():
@@ -112,19 +149,22 @@ class VectorStore:
         path_contains: Optional[str] = None,
         path_glob: Optional[str] = None,
         path_prefix: Optional[str] = None,
+        modality: Optional[Iterable[str] | str] = None,
     ) -> List[Tuple[float, StoredChunk]]:
         if self.vectors is None or not self.chunks:
             self.load()
+        mods = parse_modalities(modality)
         assert self.vectors is not None
         q = query_vec.astype(np.float32).reshape(-1)
         q = q / max(float(np.linalg.norm(q)), 1e-12)
         scores = self.vectors @ q
         indices = list(range(len(self.chunks)))
-        if path_contains or path_glob or path_prefix:
+        if path_contains or path_glob or path_prefix or mods:
             indices = [
                 i
                 for i in indices
-                if _path_matches(
+                if (not mods or (self.chunks[i].modality or "text") in mods)
+                and _path_matches(
                     self.chunks[i].path,
                     path_contains=path_contains,
                     path_glob=path_glob,

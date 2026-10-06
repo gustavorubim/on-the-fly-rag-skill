@@ -137,6 +137,29 @@ class OnnxEmbedder:
     def encode_one(self, text: str, *, normalize: bool = True) -> np.ndarray:
         return self.encode([text], normalize=normalize)[0]
 
+    # Unified embedder interface (shared with the torch GemmaEmbedder). ONNX
+    # models take raw text for both queries and documents (unchanged behaviour).
+    backend = "onnx"
+    modalities = ("text",)
+
+    def encode_queries(self, queries: Sequence[str], *, batch_size: int = 32) -> np.ndarray:
+        return self.encode(list(queries), batch_size=batch_size)
+
+    def encode_documents(
+        self,
+        texts: Sequence[str],
+        titles: Optional[Sequence[Optional[str]]] = None,
+        *,
+        batch_size: int = 32,
+    ) -> np.ndarray:
+        return self.encode(list(texts), batch_size=batch_size)
+
+    def encode_media(self, items, *, batch_size: int = 1) -> np.ndarray:  # noqa: ARG002
+        raise RuntimeError(
+            f"Model {self.model_id!r} is text-only; images/video/audio need "
+            "--model embeddinggemma-2"
+        )
+
     def _encode_batch(self, texts: List[str], *, normalize: bool) -> np.ndarray:
         # Encode without fixed padding, then pad to batch max (capped by trunc).
         encodings = self.tokenizer.encode_batch(texts)
@@ -201,3 +224,30 @@ class MiniLMEmbedder(OnnxEmbedder):
             pooling="mean",
             model_id="minilm",
         )
+
+
+def load_embedder(
+    spec: ModelSpec,
+    *,
+    dim: Optional[int] = None,
+    modalities: Sequence[str] = ("text",),
+    dtype: Optional[str] = None,
+    threads: Optional[int] = None,
+):
+    """Build the right embedder for ``spec`` (ONNX or torch backend)."""
+    if spec.backend == "torch":
+        ensure_onnx(spec)  # weights present (unsharded) or actionable error
+        from .embed_torch import GemmaEmbedder
+
+        return GemmaEmbedder(
+            spec.model_dir,
+            dim=int(dim or spec.dim),
+            modalities=modalities,
+            dtype=dtype,
+            threads=threads,
+            model_id=spec.id,
+            max_seq_length=spec.max_seq_length,
+        )
+    if dim is not None and int(dim) != spec.dim:
+        raise ValueError(f"{spec.id} only supports dim={spec.dim} (no Matryoshka)")
+    return OnnxEmbedder.from_spec(spec)

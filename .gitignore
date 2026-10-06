@@ -35,3 +35,7 @@ venv/
 
 # Reassembled Granite English R2 weights (commit shards only; unshard locally)
 .github/skills/on-the-fly-rag/models/granite-embedding-english-r2/model.onnx
+
+# Reassembled EmbeddingGemma 2 weights (commit shards only; unshard locally)
+.github/skills/on-the-fly-rag/models/embeddinggemma-2/model.safetensors
+*.unshard-tmp

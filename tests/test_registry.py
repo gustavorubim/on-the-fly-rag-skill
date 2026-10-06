@@ -32,7 +32,9 @@ SAMPLE = ROOT / "fixtures" / "sample_docs"
 class TestRegistry(unittest.TestCase):
     def test_presets_exist(self):
         self.assertEqual(DEFAULT_MODEL_ID, "minilm")
-        self.assertEqual(PRESET_IDS, ("minilm", "granite-small", "granite"))
+        self.assertEqual(
+            PRESET_IDS, ("minilm", "granite-small", "granite", "embeddinggemma-2")
+        )
         for pid in PRESET_IDS:
             spec = get_preset(pid)
             self.assertEqual(spec.id, pid)
@@ -67,7 +69,7 @@ class TestRegistry(unittest.TestCase):
 
     def test_all_models_status(self):
         rows = all_models_status()
-        self.assertEqual(len(rows), 3)
+        self.assertEqual(len(rows), 4)
 
 
 class TestConfigRecordsModel(unittest.TestCase):

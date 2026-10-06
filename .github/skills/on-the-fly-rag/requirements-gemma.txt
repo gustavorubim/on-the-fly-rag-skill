@@ -1,0 +1,16 @@
+# Optional torch backend for the embeddinggemma-2 preset (text + image + video + audio).
+# MiniLM / Granite do NOT need any of this (they run on ONNX Runtime, requirements.txt).
+#
+#   pip install -r requirements.txt -r requirements-gemma.txt \
+#       --extra-index-url https://download.pytorch.org/whl/cpu
+#
+# The --extra-index-url pulls the CPU-only torch wheel (~200 MB instead of the multi-GB CUDA build).
+# Video/audio decoding uses an `ffmpeg` binary: the system one if on PATH, else the one bundled by imageio-ffmpeg.
+torch==2.14.1
+torchvision==0.29.1
+transformers==5.19.0
+sentence-transformers==6.1.0
+safetensors==0.8.0
+pillow==12.3.0
+soundfile==0.14.0
+imageio-ffmpeg==0.6.0

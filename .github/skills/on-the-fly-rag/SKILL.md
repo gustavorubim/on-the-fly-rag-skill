@@ -4,8 +4,10 @@ description: >-
   On-the-fly RAG over a local folder of docs or a codebase. Use when the user
   asks to search, retrieve, or answer questions from a document corpus without
   a hosted vector DB. Chooses between lightweight grep/ripgrep and local
-  embedding RAG with bundled MiniLM / IBM Granite R2 ONNX models. Supports PDF/DOCX/PPTX
-  ingest and multi-hop retrieval with a scratchpad.
+  embedding RAG with bundled MiniLM / IBM Granite R2 ONNX models, or the optional
+  multimodal Google EmbeddingGemma 2 (text, images, video, audio in one space).
+  Supports PDF/DOCX/PPTX ingest, image/video/audio search and multi-hop retrieval
+  with a scratchpad.
 license: MIT
 ---
 
@@ -40,22 +42,31 @@ default **before** ingesting.
 | --- | --- | --- | --- |
 | `minilm` **(default)** | Tiny/offline-fast path, quick trials | ~87MB · 384-d · 256 tok | Ready after clone |
 | `granite-small` | Better retrieval, still small | ~94MB · 384-d · 8k | Ready after clone |
-| `granite` | Best quality | ~303MB · 768-d · 8k | **Unshard first** |
+| `granite` | Best text quality (ONNX) | ~303MB · 768-d · 8k | **Unshard first** |
+| `embeddinggemma-2` | Folder has **images / video / audio**, or user wants cross-modal / image→image search | ~1.49GB · 768-d (Matryoshka 512/256/128) · 8k | **Unshard first** + optional PyTorch extras (`requirements-gemma.txt`) + `ffmpeg`. CPU cost: text-only load ~2.1GB RAM, full multimodal ~4.8GB; images ~15s each, video ~95s per 16s segment on 2 threads |
+
+Tell the user the RAM/speed cost before choosing `embeddinggemma-2`. Do not
+suggest it for plain text folders unless asked: Granite is far cheaper there.
+With MiniLM/Granite, images/video/audio are skipped with a notice.
 
 ```bash
 python -m on_the_fly_rag models          # print choice outline + readiness
 python -m on_the_fly_rag status          # active index model + shard state
 ```
 
-Unshard Granite English R2 once if the user picks `granite`:
+Unshard once if the user picks `granite` or `embeddinggemma-2` (SHA-256 verified per
+part and for the whole file; exit code 2 and no output on mismatch):
 
 ```bash
-python -m on_the_fly_rag unshard --input models/granite-embedding-english-r2/model.onnx.part
+python -m on_the_fly_rag unshard --model granite
+python -m on_the_fly_rag unshard --model embeddinggemma-2      # --verify-only to just check
+pip install -r requirements-gemma.txt --extra-index-url https://download.pytorch.org/whl/cpu   # gemma only
 ```
 
-Then ingest with `--model minilm|granite-small|granite`. The index `config.json`
-stores `model_id`; later search uses that model automatically (errors if weights
-are missing/unsharded). Re-ingest when switching models (384 vs 768 dims).
+Then ingest with `--model minilm|granite-small|granite|embeddinggemma-2`. The index
+`config.json` stores `model_id` and `dim`; later search uses that model automatically
+(errors if weights are missing/unsharded). Search or `--append` with a different
+model or `--dim` is **refused** — re-ingest into a new index to switch.
 
 Example first prompts:
 
@@ -63,7 +74,7 @@ Example first prompts:
 /on-the-fly-rag index this folder
 ```
 
-→ Agent states/asks: MiniLM (default) vs Granite Small vs Granite English R2 →
+→ Agent states/asks: MiniLM (default) vs Granite Small vs Granite English R2 vs EmbeddingGemma 2 (if media present) →
 unshards if needed → ingest → active index records the model.
 
 ```text
@@ -139,6 +150,28 @@ Supported sources: text/code extensions **plus** `.pdf`, `.docx`, `.pptx`
 ingest does not abort.
 
 Chunking defaults stay ~200 tokens + overlap (safe for MiniLM's 256 window; Granite allows larger `--max-tokens` up to 8k).
+
+## Multimodal (EmbeddingGemma 2 only)
+
+```bash
+python -m on_the_fly_rag ingest /path/to/folder --model embeddinggemma-2            # text + media
+python -m on_the_fly_rag ingest /path/to/docs --model embeddinggemma-2 --dim 256    # Matryoshka
+python -m on_the_fly_rag ingest /path/to/more --append -o /path/to/folder/.rag_index
+python -m on_the_fly_rag search "a red bicycle" --modality image
+python -m on_the_fly_rag search "where is the candle?" --modality video   # hit shows start–end time + frames
+python -m on_the_fly_rag search "dog barking" --modality audio
+python -m on_the_fly_rag search --query-file photo.jpg --modality image   # image → image
+```
+
+- Media: png/jpg/jpeg/webp/gif, mp4/mov/webm (1 fps, ≤32-frame segments, default 16),
+  wav/mp3/m4a/flac/ogg (≤11.2s windows, default 10s). Decoding uses `ffmpeg`.
+- `--multimodal auto` (default) loads the vision/audio encoders only when the corpus
+  has such files; text corpora and text queries use the 271M text tower only.
+- Cite media hits with path + offset, e.g. `video/demo.mp4#t=16.0-32.0` (00:16–00:32).
+  Never describe media content beyond what the user can verify; say it is a
+  similarity match, not a transcript.
+- Short (<2s) sound effects retrieve weakly by text; treat audio hits as candidates.
+- `--dtype bf16` halves RAM; fp16 is refused (NaN risk per model card).
 
 ## Active index: status / use
 
@@ -259,7 +292,7 @@ citations. If either hop is thin, retry with a broader query or drop the glob.
 
 1. Clarify the corpus root (folder / repo path).
 2. Choose grep vs embed using the table above.
-3. If embedding: **first** confirm model (MiniLM / Granite Small / Granite),
+3. If embedding: **first** confirm model (MiniLM / Granite Small / Granite / EmbeddingGemma 2 for media),
    unshard if needed, ingest once (sets active + records `model_id`), then search
    **without** naming the index path.
 4. For multi-doc / compare / contradiction → use the **multi-hop loop**.
@@ -289,6 +322,14 @@ Users invoke this skill in Copilot with `/on-the-fly-rag` then a natural-languag
 ```
 
 ```text
+/on-the-fly-rag index ./field_notes (photos, voice memos, clips) with embeddinggemma-2, then find the red bicycle photo
+```
+
+```text
+/on-the-fly-rag where in the videos does a candle appear? give timestamps
+```
+
+```text
 /on-the-fly-rag compare product_spec vs ops_status on p99 latency; path-filter each hop and cite both sides
 ```
 
@@ -306,8 +347,8 @@ More copy-paste examples live in the development repo root README **Prompt cookb
 
 ## Models & sharding
 
-Presets: `minilm` | `granite-small` | `granite`. Custom ONNX: `--model path/to.onnx`.
-Granite English R2 is shipped sharded; consumers unshard once (command above).
+Presets: `minilm` | `granite-small` | `granite` | `embeddinggemma-2`. Custom ONNX: `--model path/to.onnx`.
+Granite English R2 and EmbeddingGemma 2 are shipped sharded; consumers unshard once (command above).
 To shard a new weight before commit:
 
 ```bash

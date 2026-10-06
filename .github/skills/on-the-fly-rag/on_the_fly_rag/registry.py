@@ -1,11 +1,19 @@
-"""Bundled embedding model registry (MiniLM + IBM Granite R2)."""
+"""Bundled embedding model registry (MiniLM + IBM Granite R2 + EmbeddingGemma 2).
+
+Two backends:
+
+* ``onnx``  – MiniLM / Granite via onnxruntime (base install, unchanged).
+* ``torch`` – EmbeddingGemma 2 via sentence-transformers / transformers on PyTorch
+  (optional extras: ``requirements-gemma.txt`` or ``pip install .[gemma]``).
+"""
 
 from __future__ import annotations
 
+import importlib.util
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from .paths import SKILL_ROOT
 from .shard import unshard_file
@@ -13,7 +21,13 @@ from .shard import unshard_file
 DEFAULT_MODEL_ID = "minilm"
 
 # Preset ids accepted by CLI `--model`
-PRESET_IDS = ("minilm", "granite-small", "granite")
+PRESET_IDS = ("minilm", "granite-small", "granite", "embeddinggemma-2")
+
+# Presets that need the optional PyTorch extras.
+TORCH_PRESET_IDS = ("embeddinggemma-2",)
+GEMMA_INSTALL_HINT = (
+    "pip install -r requirements-gemma.txt   (or: pip install '.[gemma]' from the skill folder)"
+)
 
 
 @dataclass(frozen=True)
@@ -34,10 +48,26 @@ class ModelSpec:
     onnx_name: str = "model.onnx"
     tokenizer_name: str = "tokenizer.json"
     needs_unshard_hint: bool = False
+    backend: str = "onnx"  # onnx | torch
+    modalities: Tuple[str, ...] = ("text",)
+    matryoshka_dims: Tuple[int, ...] = ()
+    ram_note: str = ""
 
     @property
     def onnx_path(self) -> Path:
+        """Path of the weights file (``model.onnx`` or ``model.safetensors``)."""
         return self.model_dir / self.onnx_name
+
+    @property
+    def weights_path(self) -> Path:
+        return self.onnx_path
+
+    @property
+    def is_multimodal(self) -> bool:
+        return len(self.modalities) > 1
+
+    def allowed_dims(self) -> Tuple[int, ...]:
+        return self.matryoshka_dims or (self.dim,)
 
     @property
     def tokenizer_path(self) -> Path:
@@ -97,6 +127,32 @@ def _bundled() -> Dict[str, ModelSpec]:
             license="Apache-2.0",
             needs_unshard_hint=True,
         ),
+        "embeddinggemma-2": ModelSpec(
+            id="embeddinggemma-2",
+            label="EmbeddingGemma 2 (multimodal)",
+            hf_id="google/embeddinggemma-2",
+            model_dir=models / "embeddinggemma-2",
+            dim=768,
+            max_seq_length=8192,
+            pooling="mean",
+            params_m=740,
+            context_note="8k tok shared across modalities",
+            retrieval_ballpark=(
+                "text + images + video + audio in one 768-d space (Matryoshka 512/256/128); "
+                "PyTorch backend, needs gemma extras; sharded ~1.49GB safetensors"
+            ),
+            license="Apache-2.0",
+            onnx_name="model.safetensors",
+            needs_unshard_hint=True,
+            backend="torch",
+            modalities=("text", "image", "video", "audio"),
+            matryoshka_dims=(768, 512, 256, 128),
+            ram_note=(
+                "CPU FP32: text-only load 271M params (~2.1GB peak RSS; ~1.0GB with --dtype bf16); "
+                "full multimodal 744M params (~4.8GB peak RSS). Much slower than the ONNX "
+                "models, especially for images (~15s each) and video (~95s per 16-frame segment) on 2 CPU threads"
+            ),
+        ),
     }
 
 
@@ -115,6 +171,12 @@ def get_preset(model_id: str) -> ModelSpec:
         "granite-embedding-english-r2": "granite",
         "granite-r2": "granite",
         "granite-english": "granite",
+        "embeddinggemma": "embeddinggemma-2",
+        "embeddinggemma2": "embeddinggemma-2",
+        "embedding-gemma-2": "embeddinggemma-2",
+        "gemma": "embeddinggemma-2",
+        "gemma2": "embeddinggemma-2",
+        "google/embeddinggemma-2": "embeddinggemma-2",
     }
     key = aliases.get(key, key)
     specs = _bundled()
@@ -166,6 +228,12 @@ def model_file_status(spec: ModelSpec) -> Dict[str, Any]:
         "max_seq_length": spec.max_seq_length,
         "params_m": spec.params_m,
         "license": spec.license,
+        "backend": spec.backend,
+        "modalities": list(spec.modalities),
+        "dims": list(spec.allowed_dims()),
+        "extras_installed": torch_extras_available() if spec.backend == "torch" else True,
+        "install_command": GEMMA_INSTALL_HINT if spec.backend == "torch" else None,
+        "ram_note": spec.ram_note or None,
     }
 
 
@@ -189,6 +257,9 @@ def ensure_onnx(spec: ModelSpec, *, auto_unshard: bool = False) -> Path:
         )
     raise FileNotFoundError(
         f"ONNX model not found for {spec.id} at {spec.onnx_path}. "
+        "Restore the skill package models/ folder or re-copy the on-the-fly-rag skill."
+        if spec.backend == "onnx"
+        else f"Model weights not found for {spec.id} at {spec.onnx_path}. "
         "Restore the skill package models/ folder or re-copy the on-the-fly-rag skill."
     )
 
@@ -282,8 +353,10 @@ def spec_to_config(spec: ModelSpec) -> Dict[str, Any]:
         "model": str(spec.onnx_path),
         "tokenizer": str(spec.tokenizer_path),
         "dim": spec.dim,
+        "native_dim": spec.dim,
         "max_seq_length": spec.max_seq_length,
         "pooling": spec.pooling,
+        "backend": spec.backend,
     }
 
 
@@ -320,7 +393,13 @@ def format_choice_outline() -> str:
             f"- `{spec.id}` — {spec.label}{default}\n"
             f"  {spec.params_m}M params · {spec.dim}-d · ctx {spec.context_note} · "
             f"{spec.retrieval_ballpark}\n"
-            f"  status: {ready}"
+            + (f"  backend: {spec.backend} · modalities: {', '.join(spec.modalities)}"
+               + (f" · --dim {'/'.join(str(d) for d in spec.allowed_dims())}" if spec.matryoshka_dims else "")
+               + "\n" if spec.backend != "onnx" else "")
+            + (f"  cost: {spec.ram_note}\n" if spec.ram_note else "")
+            + (f"  extras: {'installed' if st.get('extras_installed') else 'NOT installed → ' + GEMMA_INSTALL_HINT}\n"
+               if spec.backend == "torch" else "")
+            + f"  status: {ready}"
             + (
                 f" → `{st['unshard_command']}`"
                 if st.get("unshard_command")
@@ -329,10 +408,75 @@ def format_choice_outline() -> str:
         )
     lines.append("")
     lines.append(
-        "Reply with `minilm`, `granite-small`, or `granite` (or confirm default)."
+        "Reply with `minilm`, `granite-small`, `granite`, or `embeddinggemma-2` "
+        "(or confirm default). Pick `embeddinggemma-2` when the corpus has images, "
+        "video or audio, or when cross-modal search matters."
     )
     return "\n".join(lines)
 
 
 def all_models_status() -> List[Dict[str, Any]]:
     return [model_file_status(s) for s in list_presets()]
+
+
+def torch_extras_available() -> bool:
+    """True when the optional PyTorch backend (gemma extras) is importable."""
+    return all(
+        importlib.util.find_spec(m) is not None
+        for m in ("torch", "transformers", "sentence_transformers")
+    )
+
+
+class IndexCompatError(ValueError):
+    """Raised when a query/append would mix embedding models or dimensions."""
+
+
+def check_index_compat(
+    config: Dict[str, Any],
+    *,
+    model_id: Optional[str] = None,
+    dim: Optional[int] = None,
+    action: str = "search",
+) -> None:
+    """Refuse to mix models / Matryoshka dims within one index.
+
+    ``config`` is the index ``config.json``. ``model_id`` / ``dim`` are what the
+    caller wants to use (``None`` = not specified → accept the index's value).
+    Legacy indexes without ``model_id`` are only checked on ``dim``.
+    """
+    idx_model = config.get("model_id")
+    idx_dim = config.get("dim")
+    if model_id is not None and idx_model:
+        try:
+            want = get_preset(str(model_id)).id
+        except KeyError:
+            want = str(model_id)
+        if want != idx_model:
+            verb = "append to" if action == "append" else "search"
+            raise IndexCompatError(
+                f"Index was built with model {idx_model!r} (dim={idx_dim}); refusing to "
+                f"{verb} it with model {want!r}. Vectors from different models are not "
+                f"comparable. Use --model {idx_model}, or ingest into a new --index."
+            )
+    if dim is not None and idx_dim is not None and int(dim) != int(idx_dim):
+        verb = "append to" if action == "append" else "query"
+        raise IndexCompatError(
+            f"Index dim is {idx_dim} (model {idx_model or '?'}); refusing to {verb} it at "
+            f"dim {dim}. Queries and documents must share one Matryoshka dimension. "
+            f"Use --dim {idx_dim}, or re-ingest into a new --index with --dim {dim}."
+        )
+
+
+def validate_dim(spec: ModelSpec, dim: Optional[int]) -> int:
+    """Return the effective output dim for ``spec`` (Matryoshka-aware)."""
+    if dim is None:
+        return spec.dim
+    dim = int(dim)
+    allowed: Sequence[int] = spec.allowed_dims()
+    if dim not in allowed:
+        raise ValueError(
+            f"--dim {dim} is not supported by {spec.id}; choose one of "
+            f"{', '.join(str(d) for d in allowed)}"
+            + ("" if spec.matryoshka_dims else " (no Matryoshka support)")
+        )
+    return dim

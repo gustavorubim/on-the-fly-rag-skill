@@ -8,5 +8,17 @@
     "model.onnx.part02",
     "model.onnx.part03"
   ],
-  "total_bytes": 302534935
+  "total_bytes": 302534935,
+  "part_sha256": {
+    "model.onnx.part00": "a6422aeafbdf834ab162082086234d190ec03988661bd5d15897a9b126670155",
+    "model.onnx.part01": "27079149f45ca0d61f3c73b7deba188884c317d6e59b36dcb19bac82f450d23f",
+    "model.onnx.part02": "ab3be87e4cb3080f0239f9dcde60287f99bef48e2367f8188bc38713fb583d69",
+    "model.onnx.part03": "c17140fddc37245f36098dcadbf0205ab1ee423644b05dc8ddca609eb5631665"
+  },
+  "part_bytes": {
+    "model.onnx.part00": 94371840,
+    "model.onnx.part01": 94371840,
+    "model.onnx.part02": 94371840,
+    "model.onnx.part03": 19419415
+  }
 }
